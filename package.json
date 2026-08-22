@@ -1,0 +1,19 @@
+{
+  "name": "wechat-like-chat-local",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm --workspace apps/server run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "build": "npm --workspace apps/web run build",
+    "check": "npm --workspace apps/web run check"
+  },
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

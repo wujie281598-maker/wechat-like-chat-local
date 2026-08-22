@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+.env.local
+data/*.db
+data/*.db-*
+uploads/
+tmp-test/
