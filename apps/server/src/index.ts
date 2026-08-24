@@ -10,6 +10,8 @@ import {
   assignCustomerToInvite,
   authenticateStaff,
   assertStaffAccess,
+  batchDeleteUsers,
+  batchSetUserStatus,
   changeStaffPassword,
   createMessage,
   createInviteLink,
@@ -61,7 +63,7 @@ const io = new Server(httpServer, {
 });
 
 const port = Number(process.env.PORT ?? 4000);
-const phoneSchema = z.string().trim().min(5).max(20).regex(/^[0-9+\-\s]+$/);
+const phoneSchema = z.string().trim().regex(/^\d{11}$/);
 const credentialSchema = z.string().trim().min(3).max(32).regex(/^[A-Za-z0-9_-]+$/);
 const uploadDir = join(process.cwd(), "uploads");
 mkdirSync(uploadDir, { recursive: true });
@@ -103,7 +105,7 @@ app.post("/api/login", (request, response) => {
     return;
   }
 
-  const normalizedPhone = parsed.data.phone.replace(/\s+/g, "");
+  const normalizedPhone = parsed.data.phone;
   const existingUser = getUserByPhone(normalizedPhone);
   if (existingUser && existingUser.status !== "active") {
     response.status(403).json({ error: "账号已被后台禁用" });
@@ -386,6 +388,38 @@ app.get("/api/invite-links/:code", (request, response) => {
     return;
   }
   response.json({ inviteLink: { code: link.code, title: link.title, ownerName: link.owner_name } });
+});
+
+app.patch("/api/admin/users/batch/status", (request, response) => {
+  const staff = requireStaff(request, response, ["super_admin"]);
+  if (!staff) return;
+  const parsed = z.object({ userIds: z.array(z.number()).min(1), status: z.enum(["active", "disabled"]) }).safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+
+  try {
+    response.json({ count: batchSetUserStatus(parsed.data.userIds, parsed.data.status) });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "批量更新失败" });
+  }
+});
+
+app.delete("/api/admin/users/batch", (request, response) => {
+  const staff = requireStaff(request, response, ["super_admin"]);
+  if (!staff) return;
+  const parsed = z.object({ userIds: z.array(z.number()).min(1) }).safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+
+  try {
+    response.json({ count: batchDeleteUsers(parsed.data.userIds) });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "批量删除失败" });
+  }
 });
 
 app.patch("/api/admin/users/:id/status", (request, response) => {

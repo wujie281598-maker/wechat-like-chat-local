@@ -21,6 +21,7 @@ db.exec(`
     avatar_url TEXT,
     sequence_number INTEGER NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'active',
+    deleted_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at TEXT
   );
@@ -141,6 +142,9 @@ const userColumnNames = new Set(userColumns.map((column) => column.name));
 if (!userColumnNames.has("avatar_url")) {
   db.prepare("ALTER TABLE users ADD COLUMN avatar_url TEXT").run();
 }
+if (!userColumnNames.has("deleted_at")) {
+  db.prepare("ALTER TABLE users ADD COLUMN deleted_at TEXT").run();
+}
 
 const staffColumns = db.prepare("PRAGMA table_info(staff_accounts)").all() as Array<{ name: string }>;
 const staffColumnNames = new Set(staffColumns.map((column) => column.name));
@@ -177,6 +181,7 @@ export type UserRow = {
   avatar_url: string | null;
   sequence_number: number;
   status: string;
+  deleted_at: string | null;
   created_at: string;
   last_seen_at: string | null;
 };
@@ -282,6 +287,20 @@ export type QuickReplyRow = {
 const defaultAutoReply =
   "{nickname} 你好抖音评论 0.3元一条有效评论，没有数量限制。24小时都可以发 当天晚上10点前统一结算。";
 
+function createRandomCustomerNickname() {
+  const letters = "abcdefghijklmnopqrstuvwxyz";
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const length = 3 + Math.floor(Math.random() * 3);
+    let nickname = "";
+    for (let index = 0; index < length; index += 1) {
+      nickname += letters[Math.floor(Math.random() * letters.length)];
+    }
+    const existing = db.prepare("SELECT 1 FROM users WHERE nickname = ? AND deleted_at IS NULL").get(nickname);
+    if (!existing) return nickname;
+  }
+  return `u${Date.now().toString(36).slice(-4)}`.slice(0, 5);
+}
+
 db.prepare("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('auto_reply_enabled', '1')").run();
 db.prepare("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('auto_reply_text', ?)").run(defaultAutoReply);
 
@@ -335,7 +354,7 @@ export function getOrCreateUser(phone: string): UserRow {
   }
 
   const nextSequence = ((db.prepare("SELECT COALESCE(MAX(sequence_number), 0) + 1 AS value FROM users").get() as { value: number }).value);
-  const nickname = `A${nextSequence}`;
+  const nickname = createRandomCustomerNickname();
   const result = db
     .prepare("INSERT INTO users (phone, nickname, sequence_number, last_seen_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)")
     .run(phone, nickname, nextSequence);
@@ -352,7 +371,7 @@ export function getOrCreateUserWithNickname(phone: string, nickname?: string): U
 
   const create = db.transaction(() => {
     const nextSequence = (db.prepare("SELECT COALESCE(MAX(sequence_number), 0) + 1 AS value FROM users").get() as { value: number }).value;
-    const nextNickname = nickname ?? `A${nextSequence}`;
+    const nextNickname = nickname ?? createRandomCustomerNickname();
     const result = db
       .prepare("INSERT INTO users (phone, nickname, sequence_number, last_seen_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)")
       .run(phone, nextNickname, nextSequence);
@@ -363,11 +382,11 @@ export function getOrCreateUserWithNickname(phone: string, nickname?: string): U
 }
 
 export function getUserByPhone(phone: string): UserRow | null {
-  return (db.prepare("SELECT * FROM users WHERE phone = ?").get(phone) as UserRow | undefined) ?? null;
+  return (db.prepare("SELECT * FROM users WHERE phone = ? AND deleted_at IS NULL").get(phone) as UserRow | undefined) ?? null;
 }
 
 export function getUserById(userId: number): UserRow | null {
-  return (db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as UserRow | undefined) ?? null;
+  return (db.prepare("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL").get(userId) as UserRow | undefined) ?? null;
 }
 
 export function assertActiveUser(userId: number) {
@@ -399,13 +418,14 @@ export function getUsers(currentUserId: number): UserRow[] {
           users.id,
           users.phone,
           COALESCE(NULLIF(ca.remark_name, ''), users.nickname) AS nickname,
-          users.avatar_url,
+          COALESCE(staff_avatar.avatar_url, users.avatar_url) AS avatar_url,
           users.sequence_number,
           users.status,
           users.created_at,
           users.last_seen_at
         FROM users
         JOIN customer_assignments ca ON ca.user_id = users.id
+        LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
         WHERE ca.staff_id = @staffId
           AND users.status = 'active'
           AND users.id NOT IN (${baseHiddenPeerSql})
@@ -432,12 +452,22 @@ export function getUsers(currentUserId: number): UserRow[] {
 
   return db
     .prepare(`
-      SELECT *
+      SELECT
+        users.id,
+        users.phone,
+        users.nickname,
+        COALESCE(staff_avatar.avatar_url, users.avatar_url) AS avatar_url,
+        users.sequence_number,
+        users.status,
+        users.deleted_at,
+        users.created_at,
+        users.last_seen_at
       FROM users
-      WHERE id = @peerId
-        AND id != @currentUserId
-        AND status = 'active'
-        AND id NOT IN (
+      LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
+      WHERE users.id = @peerId
+        AND users.id != @currentUserId
+        AND users.status = 'active'
+        AND users.id NOT IN (
           ${baseHiddenPeerSql}
         )
       ORDER BY sequence_number ASC
@@ -446,16 +476,42 @@ export function getUsers(currentUserId: number): UserRow[] {
 }
 
 export function getAllUsers(): UserRow[] {
-  return db.prepare("SELECT * FROM users ORDER BY sequence_number ASC").all() as UserRow[];
+  return db.prepare("SELECT * FROM users WHERE deleted_at IS NULL ORDER BY sequence_number ASC").all() as UserRow[];
 }
 
 export function setUserStatus(userId: number, status: "active" | "disabled"): UserRow {
   const user = getUserById(userId);
   if (!user) throw new Error("用户不存在");
   if (user.sequence_number === 1 && status === "disabled") throw new Error("A1 是自动回复账号，不能禁用");
+  if (user.phone.startsWith("staff:")) throw new Error("客服账号不能在客户列表操作");
   const result = db.prepare("UPDATE users SET status = ? WHERE id = ?").run(status, userId);
   if (result.changes === 0) throw new Error("用户不存在");
   return db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as UserRow;
+}
+
+function assertEditableCustomerIds(userIds: number[]) {
+  const uniqueIds = Array.from(new Set(userIds.filter((id) => Number.isInteger(id) && id > 0)));
+  if (uniqueIds.length === 0) throw new Error("请选择客户");
+  const placeholders = uniqueIds.map(() => "?").join(",");
+  const users = db.prepare(`SELECT * FROM users WHERE id IN (${placeholders}) AND deleted_at IS NULL`).all(...uniqueIds) as UserRow[];
+  if (users.length !== uniqueIds.length) throw new Error("部分客户不存在");
+  const invalid = users.find((user) => user.sequence_number === 1 || user.phone.startsWith("staff:"));
+  if (invalid) throw new Error("包含不能操作的账号");
+  return uniqueIds;
+}
+
+export function batchSetUserStatus(userIds: number[], status: "active" | "disabled") {
+  const editableIds = assertEditableCustomerIds(userIds);
+  const placeholders = editableIds.map(() => "?").join(",");
+  db.prepare(`UPDATE users SET status = ? WHERE id IN (${placeholders})`).run(status, ...editableIds);
+  return editableIds.length;
+}
+
+export function batchDeleteUsers(userIds: number[]) {
+  const editableIds = assertEditableCustomerIds(userIds);
+  const placeholders = editableIds.map(() => "?").join(",");
+  db.prepare(`UPDATE users SET status = 'disabled', deleted_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`).run(...editableIds);
+  return editableIds.length;
 }
 
 export function getSetting(key: string): string | null {
@@ -845,17 +901,8 @@ export function createInviteNickname(inviteCode: string | null) {
   const invite = getInviteLinkByCode(inviteCode);
   if (!invite || invite.status !== "active") return null;
   const service = getStaffById(invite.owner_staff_id);
-  if (!service || service.role !== "service" || !service.customer_prefix) return null;
-
-  const reserveNickname = db.transaction(() => {
-    const currentService = db.prepare("SELECT * FROM staff_accounts WHERE id = ?").get(service.id) as StaffRow;
-    const nickname = `${currentService.customer_prefix}${currentService.next_customer_sequence}`;
-    db.prepare("UPDATE staff_accounts SET next_customer_sequence = next_customer_sequence + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(
-      service.id,
-    );
-    return nickname;
-  });
-  return reserveNickname();
+  if (!service || service.role !== "service") return null;
+  return createRandomCustomerNickname();
 }
 
 function getActiveServiceByChatUserId(userId: number) {
@@ -1053,11 +1100,15 @@ export function getConversations(userId: number): ConversationRow[] {
           WHEN @staffId IS NOT NULL THEN COALESCE(NULLIF(display_assignment.remark_name, ''), peer.nickname)
           ELSE peer.nickname
         END AS peer_nickname,
-        CASE WHEN c.type = 'self' THEN self_user.avatar_url ELSE peer.avatar_url END AS peer_avatar_url,
+        CASE
+          WHEN c.type = 'self' THEN COALESCE(self_staff.avatar_url, self_user.avatar_url)
+          ELSE COALESCE(peer_staff.avatar_url, peer.avatar_url)
+        END AS peer_avatar_url,
         CASE WHEN c.type = 'self' THEN self_user.last_seen_at ELSE peer.last_seen_at END AS peer_last_seen_at
       FROM conversations c
       JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = @userId
       JOIN users self_user ON self_user.id = cm.user_id
+      LEFT JOIN staff_accounts self_staff ON self_staff.chat_user_id = self_user.id AND self_staff.deleted_at IS NULL
       LEFT JOIN messages m ON m.id = (
         SELECT id FROM messages
         WHERE conversation_id = c.id
@@ -1066,6 +1117,7 @@ export function getConversations(userId: number): ConversationRow[] {
       )
       LEFT JOIN conversation_members peer_cm ON peer_cm.conversation_id = c.id AND peer_cm.user_id != @userId
       LEFT JOIN users peer ON peer.id = peer_cm.user_id
+      LEFT JOIN staff_accounts peer_staff ON peer_staff.chat_user_id = peer.id AND peer_staff.deleted_at IS NULL
       LEFT JOIN customer_assignments display_assignment ON display_assignment.user_id = peer.id AND display_assignment.staff_id = @staffId
       WHERE cm.deleted_at IS NULL
         AND (
@@ -1101,9 +1153,10 @@ export function getMessages(conversationId: number, userId: number): MessageRow[
 
   return db
     .prepare(`
-      SELECT messages.*, users.nickname AS sender_nickname, users.avatar_url AS sender_avatar_url
+      SELECT messages.*, users.nickname AS sender_nickname, COALESCE(staff_avatar.avatar_url, users.avatar_url) AS sender_avatar_url
       FROM messages
       JOIN users ON users.id = messages.sender_id
+      LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
       WHERE messages.conversation_id = ?
       ORDER BY datetime(messages.created_at) ASC, messages.id ASC
     `)
@@ -1139,9 +1192,10 @@ export function createMessage(input: NewMessageInput): MessageRow {
   const messageId = create();
   return db
     .prepare(`
-      SELECT messages.*, users.nickname AS sender_nickname, users.avatar_url AS sender_avatar_url
+      SELECT messages.*, users.nickname AS sender_nickname, COALESCE(staff_avatar.avatar_url, users.avatar_url) AS sender_avatar_url
       FROM messages
       JOIN users ON users.id = messages.sender_id
+      LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
       WHERE messages.id = ?
     `)
     .get(messageId) as MessageRow;
@@ -1153,9 +1207,10 @@ export function getMessagesByIds(messageIds: number[], userId: number): MessageR
   const placeholders = messageIds.map(() => "?").join(",");
   return db
     .prepare(`
-      SELECT messages.*, users.nickname AS sender_nickname, users.avatar_url AS sender_avatar_url
+      SELECT messages.*, users.nickname AS sender_nickname, COALESCE(staff_avatar.avatar_url, users.avatar_url) AS sender_avatar_url
       FROM messages
       JOIN users ON users.id = messages.sender_id
+      LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
       JOIN conversation_members cm ON cm.conversation_id = messages.conversation_id AND cm.user_id = ?
       WHERE messages.id IN (${placeholders})
         AND messages.revoked_at IS NULL
@@ -1168,9 +1223,10 @@ export function recallMessage(messageId: number, userId: number): MessageRow {
   assertActiveUser(userId);
   const existing = db
     .prepare(`
-      SELECT messages.*, users.nickname AS sender_nickname
+      SELECT messages.*, users.nickname AS sender_nickname, COALESCE(staff_avatar.avatar_url, users.avatar_url) AS sender_avatar_url
       FROM messages
       JOIN users ON users.id = messages.sender_id
+      LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
       JOIN conversation_members cm ON cm.conversation_id = messages.conversation_id AND cm.user_id = ?
       WHERE messages.id = ?
     `)
@@ -1183,9 +1239,10 @@ export function recallMessage(messageId: number, userId: number): MessageRow {
   db.prepare("UPDATE messages SET revoked_at = CURRENT_TIMESTAMP WHERE id = ?").run(messageId);
   return db
     .prepare(`
-      SELECT messages.*, users.nickname AS sender_nickname
+      SELECT messages.*, users.nickname AS sender_nickname, COALESCE(staff_avatar.avatar_url, users.avatar_url) AS sender_avatar_url
       FROM messages
       JOIN users ON users.id = messages.sender_id
+      LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
       WHERE messages.id = ?
     `)
     .get(messageId) as MessageRow;

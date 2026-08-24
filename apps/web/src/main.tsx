@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 
-const API_URL = `${window.location.protocol}//${window.location.hostname}:4000`;
+const API_URL = window.location.origin;
 function makeClientId(userId: number) {
   const randomUuid = globalThis.crypto?.randomUUID?.();
   if (randomUuid) return `${userId}-${Date.now()}-${randomUuid}`;
@@ -103,6 +103,7 @@ type ChatMessage = {
   revoked_at: string | null;
   edited_at: string | null;
   sender_nickname: string;
+  sender_avatar_url: string | null;
 };
 
 type ViewMode = "chats" | "contacts";
@@ -272,6 +273,10 @@ function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError("");
+    if (loginMode === "customer" && !/^\d{11}$/.test(phone)) {
+      setError("请输入 11 位手机号");
+      return;
+    }
     setLoading(true);
     try {
       const result =
@@ -303,7 +308,7 @@ function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number 
         <div className="brand-mark">
           <MessageCircle size={30} strokeWidth={2.4} />
         </div>
-        <h1>本地聊天</h1>
+        <h1>抖抖IM</h1>
         <p>{loginMode === "service" ? "请输入客服账号信息进入聊天。" : inviteCode ? "请输入手机号进入专属服务。" : "请输入手机号进入聊天。"}</p>
         <div className="login-mode-tabs">
           <button type="button" className={loginMode === "customer" ? "active" : ""} onClick={() => setLoginMode("customer")}>客户</button>
@@ -316,9 +321,11 @@ function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number 
               <input
                 id="phone"
                 value={phone}
-                onChange={(event) => setPhone(event.target.value)}
+                onChange={(event) => setPhone(event.target.value.replace(/\D/g, "").slice(0, 11))}
                 placeholder="请输入手机号"
-                inputMode="tel"
+                inputMode="numeric"
+                maxLength={11}
+                pattern="\d{11}"
                 autoComplete="tel"
               />
             </>
@@ -359,6 +366,7 @@ function AdminApp() {
   const [saving, setSaving] = useState(false);
   const [activeAdminPage, setActiveAdminPage] = useState<AdminPage>("staff");
   const [customerPage, setCustomerPage] = useState(1);
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<number[]>([]);
   const [staffForm, setStaffForm] = useState({ username: "", password: "", displayName: "", customerPrefix: "" });
   const [linkForm, setLinkForm] = useState({ title: "", ownerStaffId: "", autoReplyEnabled: true, autoReplyText: "{nickname} 你好抖音评论 0.3元一条有效评论，没有数量限制。24小时都可以发 当天晚上10点前统一结算。" });
   const staffAvatarInputRef = useRef<HTMLInputElement | null>(null);
@@ -549,8 +557,42 @@ function AdminApp() {
     }
   }
 
+  async function batchUpdateUsers(status: "active" | "disabled") {
+    if (selectedCustomerIds.length === 0) return;
+    const actionText = status === "disabled" ? "禁用" : "启用";
+    if (!window.confirm(`确定${actionText}选中的 ${selectedCustomerIds.length} 位客户吗？`)) return;
+    setError("");
+    try {
+      await adminApi<{ count: number }>("/api/admin/users/batch/status", token, {
+        method: "PATCH",
+        body: JSON.stringify({ userIds: selectedCustomerIds, status }),
+      });
+      setSelectedCustomerIds([]);
+      await loadOverview();
+    } catch (requestError) {
+      showError(requestError instanceof Error ? requestError.message : `批量${actionText}失败`);
+    }
+  }
+
+  async function batchDeleteSelectedUsers() {
+    if (selectedCustomerIds.length === 0) return;
+    if (!window.confirm(`确定删除选中的 ${selectedCustomerIds.length} 位客户吗？删除后客户不能登录，后台列表也会隐藏。`)) return;
+    setError("");
+    try {
+      await adminApi<{ count: number }>("/api/admin/users/batch", token, {
+        method: "DELETE",
+        body: JSON.stringify({ userIds: selectedCustomerIds }),
+      });
+      setSelectedCustomerIds([]);
+      await loadOverview();
+    } catch (requestError) {
+      showError(requestError instanceof Error ? requestError.message : "批量删除失败");
+    }
+  }
+
   useEffect(() => {
     setCustomerPage(1);
+    setSelectedCustomerIds([]);
   }, [query]);
 
   if (!token || (!overview && !error)) {
@@ -576,13 +618,27 @@ function AdminApp() {
   const totalCustomerPages = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
   const safeCustomerPage = Math.min(customerPage, totalCustomerPages);
   const pagedUsers = filteredUsers.slice((safeCustomerPage - 1) * pageSize, safeCustomerPage * pageSize);
+  const selectablePagedUsers = pagedUsers.filter((user) => user.sequence_number !== 1);
+  const allPagedUsersSelected = selectablePagedUsers.length > 0 && selectablePagedUsers.every((user) => selectedCustomerIds.includes(user.id));
+
+  function toggleCustomerSelection(userId: number) {
+    setSelectedCustomerIds((ids) => (ids.includes(userId) ? ids.filter((id) => id !== userId) : [...ids, userId]));
+  }
+
+  function togglePagedCustomerSelection() {
+    if (allPagedUsersSelected) {
+      setSelectedCustomerIds((ids) => ids.filter((id) => !selectablePagedUsers.some((user) => user.id === id)));
+      return;
+    }
+    setSelectedCustomerIds((ids) => Array.from(new Set([...ids, ...selectablePagedUsers.map((user) => user.id)])));
+  }
 
   return (
     <main className="admin-shell">
       <aside className="admin-side">
         <div className="admin-brand">
           <MessageCircle size={24} />
-          <strong>本地聊天后台</strong>
+          <strong>抖抖IM后台</strong>
         </div>
         <button className={`admin-nav ${activeAdminPage === "staff" ? "active" : ""}`} onClick={() => setActiveAdminPage("staff")}>客服</button>
         <button className={`admin-nav ${activeAdminPage === "links" ? "active" : ""}`} onClick={() => setActiveAdminPage("links")}>链接/二维码</button>
@@ -660,7 +716,7 @@ function AdminApp() {
                 <strong>{item.display_name}</strong>
                 <span>{item.username}</span>
                 <span>{item.display_name}</span>
-                <span>{item.customer_prefix ? `${item.customer_prefix}${item.next_customer_sequence} 起` : "旧数据"}</span>
+                <span>客户随机字母昵称</span>
                 <span className={item.status === "active" ? "status-active" : "status-disabled"}>{item.status === "active" ? "启用" : "禁用"}</span>
                 <div className="row-actions staff-row-actions">
                   <button onClick={() => {
@@ -739,10 +795,32 @@ function AdminApp() {
             </div>
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索编号 / 手机号 / 状态" />
           </header>
-          <div className="admin-table">
-            <div className="admin-table-head"><span>编号</span><span>手机号</span><span>状态</span><span>最近在线</span><span>操作</span></div>
+          {selectedCustomerIds.length > 0 ? (
+            <div className="bulk-action-bar">
+              <span>已选 {selectedCustomerIds.length} 位客户</span>
+              <button onClick={() => void batchUpdateUsers("disabled")}>批量禁用</button>
+              <button onClick={() => void batchUpdateUsers("active")}>批量启用</button>
+              <button className="danger-action" onClick={() => void batchDeleteSelectedUsers()}>批量删除</button>
+              <button onClick={() => setSelectedCustomerIds([])}>取消选择</button>
+            </div>
+          ) : null}
+          <div className="admin-table customer-table">
+            <div className="admin-table-head">
+              <label className="admin-check-cell">
+                <input type="checkbox" checked={allPagedUsersSelected} onChange={togglePagedCustomerSelection} disabled={selectablePagedUsers.length === 0} />
+              </label>
+              <span>编号</span><span>手机号</span><span>状态</span><span>最近在线</span><span>操作</span>
+            </div>
             {pagedUsers.map((user) => (
               <div className="admin-table-row" key={user.id}>
+                <label className="admin-check-cell">
+                  <input
+                    type="checkbox"
+                    checked={selectedCustomerIds.includes(user.id)}
+                    onChange={() => toggleCustomerSelection(user.id)}
+                    disabled={user.sequence_number === 1}
+                  />
+                </label>
                 <strong>{user.nickname}</strong>
                 <span>{user.phone}</span>
                 <span className={user.status === "active" ? "status-active" : "status-disabled"}>{user.status === "active" ? "启用" : "禁用"}</span>
@@ -801,6 +879,7 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
   const [pendingConversationId, setPendingConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [selectedMessageIds, setSelectedMessageIds] = useState<number[]>([]);
@@ -836,6 +915,7 @@ function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const activeConversationIdRef = useRef<number | null>(null);
+  const messageLoadSeqRef = useRef(0);
   const currentUserRef = useRef<User | null>(null);
   const draftRef = useRef("");
   const sendingRef = useRef(false);
@@ -856,9 +936,8 @@ function App() {
     if (!pendingConversationId || !currentUser) return;
     const nextConversationId = pendingConversationId;
     setPendingConversationId(null);
-    setActiveConversationId(nextConversationId);
+    openConversation(nextConversationId);
     setMode("chats");
-    void loadMessages(nextConversationId).catch(handleSessionError);
   }, [pendingConversationId, currentUser]);
 
   useEffect(() => {
@@ -869,6 +948,18 @@ function App() {
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [activeConversationId, conversations],
   );
+
+  function openConversation(conversationId: number) {
+    setActionMenu(null);
+    setConversationMenu(null);
+    setSelectedMessageIds([]);
+    setForwardMode(null);
+    setToolPanelOpen(false);
+    setActiveConversationId(conversationId);
+    setMessages([]);
+    setMessagesLoading(true);
+    void loadMessages(conversationId, { showSwitching: true }).catch(handleSessionError);
+  }
 
   function forceLogout(message: string) {
     if (sessionBlockedRef.current) return;
@@ -979,21 +1070,31 @@ function App() {
       method: "POST",
       body: JSON.stringify({ userId: currentUser.id, peerId }),
     });
-    setActiveConversationId(result.conversationId);
+    openConversation(result.conversationId);
     setMode("chats");
     await loadConversations(currentUser.id);
-    await loadMessages(result.conversationId);
   }
 
-  async function loadMessages(conversationId: number) {
+  async function loadMessages(conversationId: number, options: { showSwitching?: boolean } = {}) {
     if (!currentUser) return;
-    const result = await api<{ messages: ChatMessage[] }>(
-      `/api/conversations/${conversationId}/messages?userId=${currentUser.id}`,
-    );
-    setMessages(result.messages);
-    window.setTimeout(() => scrollToBottom("auto"), 0);
-    window.setTimeout(() => scrollToBottom("auto"), 220);
-    await loadConversations(currentUser.id);
+    const loadSeq = ++messageLoadSeqRef.current;
+    if (options.showSwitching) setMessagesLoading(true);
+    try {
+      const result = await api<{ messages: ChatMessage[] }>(
+        `/api/conversations/${conversationId}/messages?userId=${currentUser.id}`,
+      );
+      if (loadSeq !== messageLoadSeqRef.current || activeConversationIdRef.current !== conversationId) {
+        return;
+      }
+      setMessages(result.messages);
+      window.setTimeout(() => scrollToBottom("auto"), 0);
+      window.setTimeout(() => scrollToBottom("auto"), 220);
+      await loadConversations(currentUser.id);
+    } finally {
+      if (loadSeq === messageLoadSeqRef.current) {
+        setMessagesLoading(false);
+      }
+    }
   }
 
   async function sendMessage(event?: React.SyntheticEvent) {
@@ -1146,15 +1247,17 @@ function App() {
   }
 
   async function uploadFiles(files: FileList | null, source: "picker" | "capture" = "picker") {
-    if (!currentUser || !activeConversationId || !files?.length) return;
+    const conversationId = activeConversationIdRef.current;
+    if (!currentUser || !conversationId || !files?.length || uploading) return;
     let uploaded = false;
     setUploading(true);
+    setNotice(`正在上传 ${files.length} 个文件...`);
     try {
       for (const file of Array.from(files)) {
         const formData = new FormData();
         formData.append("userId", String(currentUser.id));
         formData.append("file", file);
-        const response = await fetch(`${API_URL}/api/conversations/${activeConversationId}/uploads`, {
+        const response = await fetch(`${API_URL}/api/conversations/${conversationId}/uploads`, {
           method: "POST",
           body: formData,
         });
@@ -1164,6 +1267,7 @@ function App() {
       }
       if (uploaded) {
         setNotice("已发送");
+        await loadMessages(conversationId);
         scrollToBottom("smooth");
       }
       if (uploaded && source === "capture") closeCamera();
@@ -1189,18 +1293,21 @@ function App() {
   }
 
   async function uploadBlob(blob: Blob, fileName: string) {
-    if (!currentUser || !activeConversationId) return;
+    const conversationId = activeConversationIdRef.current;
+    if (!currentUser || !conversationId || uploading) return;
     setUploading(true);
+    setNotice("正在上传文件...");
     try {
       const formData = new FormData();
       formData.append("userId", String(currentUser.id));
       formData.append("file", new File([blob], fileName, { type: blob.type }));
-      const response = await fetch(`${API_URL}/api/conversations/${activeConversationId}/uploads`, {
+      const response = await fetch(`${API_URL}/api/conversations/${conversationId}/uploads`, {
         method: "POST",
         body: formData,
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "上传失败");
+      await loadMessages(conversationId);
       closeCamera();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "上传失败");
@@ -1585,8 +1692,7 @@ function App() {
                         setSwipedConversationId(null);
                         return;
                       }
-                      setActiveConversationId(conversation.id);
-                      void loadMessages(conversation.id);
+                      openConversation(conversation.id);
                     }}
                     onContextMenu={(event) => {
                       event.preventDefault();
@@ -1693,7 +1799,19 @@ function App() {
                 </button>
               </div>
             ) : null}
-            <div className="message-list" ref={messageListRef}>
+            <div className={`message-list ${messagesLoading ? "is-switching" : ""}`} ref={messageListRef}>
+              {messagesLoading ? (
+                <div className="chat-loading">
+                  <span />
+                  <strong>正在切换会话...</strong>
+                </div>
+              ) : null}
+              {uploading ? (
+                <div className="upload-loading">
+                  <span />
+                  <strong>正在上传文件...</strong>
+                </div>
+              ) : null}
               {messages.map((message) => {
                 const mine = message.sender_id === currentUser.id;
                 const selected = selectedMessageIds.includes(message.id);
@@ -1703,7 +1821,8 @@ function App() {
                     (activeConversation.peer_id === message.sender_id ? activeConversation.peer_phone : null);
                 const senderAvatarUrl = mine
                   ? currentUser.avatar_url
-                  : users.find((user) => user.id === message.sender_id)?.avatar_url ??
+                  : message.sender_avatar_url ??
+                    users.find((user) => user.id === message.sender_id)?.avatar_url ??
                     (activeConversation.peer_id === message.sender_id ? activeConversation.peer_avatar_url : null);
                 if (message.revoked_at) {
                   const canReEdit = mine && Boolean(editableRecalls[message.id]);
@@ -1809,7 +1928,7 @@ function App() {
                 ref={bindSendButton}
                 type="button"
                 className={`send-button ${draft.trim() ? "" : "is-empty"}`}
-                aria-disabled={!draft.trim()}
+                aria-disabled={!draft.trim() || uploading}
                 onPointerDown={(event) => {
                   event.preventDefault();
                   void sendMessage(event);
@@ -1830,15 +1949,15 @@ function App() {
                   <span>快捷语</span>
                 </button>
               ) : null}
-              <button type="button" className="plus-button" onClick={toggleToolPanel} aria-label="打开更多功能">
+              <button type="button" className="plus-button" onClick={toggleToolPanel} disabled={uploading} aria-label="打开更多功能">
                 <Plus size={24} />
               </button>
             </div>
             {toolPanelOpen ? (
               <div className="tool-panel">
-                <ToolButton icon={<ImageIcon />} label="照片" onClick={() => fileInputRef.current?.click()} />
-                <ToolButton icon={<Camera />} label="拍摄" onClick={() => void openCamera("photo")} />
-                <ToolButton icon={<FileIcon />} label="文件" onClick={() => fileInputRef.current?.click()} />
+                <ToolButton icon={<ImageIcon />} label="照片" onClick={() => !uploading && fileInputRef.current?.click()} />
+                <ToolButton icon={<Camera />} label="拍摄" onClick={() => !uploading && void openCamera("photo")} />
+                <ToolButton icon={<FileIcon />} label="文件" onClick={() => !uploading && fileInputRef.current?.click()} />
               </div>
             ) : null}
           </>

@@ -474,6 +474,51 @@ button {
   opacity: 0.55;
 }
 
+.customer-table .admin-table-head,
+.customer-table .admin-table-row {
+  min-width: 760px;
+  grid-template-columns: 34px 110px minmax(140px, 1.2fr) 90px 120px 100px;
+}
+
+.admin-check-cell {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+}
+
+.admin-check-cell input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--green);
+}
+
+.bulk-action-bar {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f4f8f6;
+}
+
+.bulk-action-bar span {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.bulk-action-bar button {
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
 .staff-table .admin-table-head,
 .staff-table .admin-table-row {
   grid-template-columns: 1fr 1fr 92px 120px 1fr 80px 80px;
@@ -977,13 +1022,62 @@ button {
 }
 
 .message-list {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 20px 20px 18px;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
+  user-select: text;
+}
+
+.message-list.is-switching {
+  overflow: hidden;
+}
+
+.chat-loading,
+.upload-loading {
+  position: sticky;
+  top: 42%;
+  z-index: 4;
+  width: fit-content;
+  min-width: 132px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 auto;
+  padding: 9px 12px;
+  border: 1px solid rgba(17, 26, 36, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(17, 26, 36, 0.1);
+  color: var(--muted);
+  font-size: 13px;
+  backdrop-filter: blur(10px);
+}
+
+.upload-loading {
+  top: 12px;
+}
+
+.chat-loading span,
+.upload-loading span {
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(7, 193, 96, 0.2);
+  border-top-color: var(--green);
+  border-radius: 999px;
+  animation: spin 0.75s linear infinite;
+}
+
+.chat-loading strong,
+.upload-loading strong {
+  font-weight: 600;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .message-row {
@@ -1084,16 +1178,14 @@ button {
   padding: 0;
   background: transparent;
   text-align: left;
-  -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
-  user-select: none;
+  user-select: text;
 }
 
-.bubble-button *,
-.tool-button * {
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
+.tool-button *,
+.message-avatar,
+.select-dot {
   user-select: none;
 }
 
@@ -2052,6 +2144,16 @@ button {
 
   .message-list {
     padding: 14px 12px 16px;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .bubble-button,
+  .bubble-button * {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   .profile-bar {
