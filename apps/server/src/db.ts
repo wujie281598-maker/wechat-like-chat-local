@@ -18,6 +18,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     phone TEXT NOT NULL UNIQUE,
     nickname TEXT NOT NULL,
+    avatar_url TEXT,
     sequence_number INTEGER NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -75,6 +76,7 @@ db.exec(`
     parent_id INTEGER,
     chat_user_id INTEGER,
     customer_prefix TEXT,
+    avatar_url TEXT,
     next_customer_sequence INTEGER NOT NULL DEFAULT 1,
     deleted_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -105,10 +107,23 @@ db.exec(`
     user_id INTEGER PRIMARY KEY,
     staff_id INTEGER NOT NULL,
     invite_link_id INTEGER,
+    remark_name TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (staff_id) REFERENCES staff_accounts(id),
     FOREIGN KEY (invite_link_id) REFERENCES invite_links(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS quick_replies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    staff_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (staff_id) REFERENCES staff_accounts(id)
   );
 `);
 
@@ -119,6 +134,12 @@ if (!messageColumnNames.has("revoked_at")) {
 }
 if (!messageColumnNames.has("edited_at")) {
   db.prepare("ALTER TABLE messages ADD COLUMN edited_at TEXT").run();
+}
+
+const userColumns = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+const userColumnNames = new Set(userColumns.map((column) => column.name));
+if (!userColumnNames.has("avatar_url")) {
+  db.prepare("ALTER TABLE users ADD COLUMN avatar_url TEXT").run();
 }
 
 const staffColumns = db.prepare("PRAGMA table_info(staff_accounts)").all() as Array<{ name: string }>;
@@ -132,6 +153,9 @@ if (!staffColumnNames.has("next_customer_sequence")) {
 if (!staffColumnNames.has("deleted_at")) {
   db.prepare("ALTER TABLE staff_accounts ADD COLUMN deleted_at TEXT").run();
 }
+if (!staffColumnNames.has("avatar_url")) {
+  db.prepare("ALTER TABLE staff_accounts ADD COLUMN avatar_url TEXT").run();
+}
 db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_customer_prefix ON staff_accounts(customer_prefix) WHERE customer_prefix IS NOT NULL").run();
 
 const inviteColumns = db.prepare("PRAGMA table_info(invite_links)").all() as Array<{ name: string }>;
@@ -140,10 +164,17 @@ if (!inviteColumnNames.has("deleted_at")) {
   db.prepare("ALTER TABLE invite_links ADD COLUMN deleted_at TEXT").run();
 }
 
+const assignmentColumns = db.prepare("PRAGMA table_info(customer_assignments)").all() as Array<{ name: string }>;
+const assignmentColumnNames = new Set(assignmentColumns.map((column) => column.name));
+if (!assignmentColumnNames.has("remark_name")) {
+  db.prepare("ALTER TABLE customer_assignments ADD COLUMN remark_name TEXT").run();
+}
+
 export type UserRow = {
   id: number;
   phone: string;
   nickname: string;
+  avatar_url: string | null;
   sequence_number: number;
   status: string;
   created_at: string;
@@ -162,6 +193,7 @@ export type ConversationRow = {
   peer_id: number | null;
   peer_phone: string | null;
   peer_nickname: string | null;
+  peer_avatar_url: string | null;
   peer_last_seen_at: string | null;
 };
 
@@ -177,6 +209,7 @@ export type MessageRow = {
   revoked_at: string | null;
   edited_at: string | null;
   sender_nickname: string;
+  sender_avatar_url: string | null;
 };
 
 export type NewMessageInput = {
@@ -205,6 +238,7 @@ export type StaffRow = {
   parent_id: number | null;
   chat_user_id: number | null;
   customer_prefix: string | null;
+  avatar_url: string | null;
   next_customer_sequence: number;
   deleted_at: string | null;
   created_at: string;
@@ -232,6 +266,17 @@ export type InviteLinkRow = {
   updated_at: string;
   owner_name: string;
   owner_role: StaffRole;
+};
+
+export type QuickReplyRow = {
+  id: number;
+  staff_id: number;
+  title: string;
+  content: string;
+  sort_order: number;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 const defaultAutoReply =
@@ -350,7 +395,15 @@ export function getUsers(currentUserId: number): UserRow[] {
   if (serviceAccount) {
     return db
       .prepare(`
-        SELECT users.*
+        SELECT
+          users.id,
+          users.phone,
+          COALESCE(NULLIF(ca.remark_name, ''), users.nickname) AS nickname,
+          users.avatar_url,
+          users.sequence_number,
+          users.status,
+          users.created_at,
+          users.last_seen_at
         FROM users
         JOIN customer_assignments ca ON ca.user_id = users.id
         WHERE ca.staff_id = @staffId
@@ -446,6 +499,7 @@ function staffSelectSql() {
       staff_accounts.parent_id,
       staff_accounts.chat_user_id,
       staff_accounts.customer_prefix,
+      staff_accounts.avatar_url,
       staff_accounts.next_customer_sequence,
       staff_accounts.deleted_at,
       staff_accounts.created_at,
@@ -535,6 +589,108 @@ export function createStaffAccount(input: {
   return getStaffPublicById(create());
 }
 
+export function updateStaffAvatar(actorId: number, staffId: number, avatarUrl: string) {
+  assertStaffAccess(actorId, ["super_admin"]);
+  const target = getStaffById(staffId);
+  if (!target) throw new Error("客服不存在");
+  if (target.role !== "service") throw new Error("只能设置客服头像");
+  const update = db.transaction(() => {
+    db.prepare("UPDATE staff_accounts SET avatar_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(avatarUrl, staffId);
+    if (target.chat_user_id) {
+      db.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").run(avatarUrl, target.chat_user_id);
+    }
+  });
+  update();
+  return getStaffPublicById(staffId);
+}
+
+export function updateCustomerRemark(actorUserId: number, customerUserId: number, remarkName: string) {
+  assertActiveUser(actorUserId);
+  const service = getActiveServiceByChatUserId(actorUserId);
+  if (!service) throw new Error("只有客服可以备注客户");
+  const normalizedRemark = remarkName.trim();
+  const result = db
+    .prepare("UPDATE customer_assignments SET remark_name = ? WHERE user_id = ? AND staff_id = ?")
+    .run(normalizedRemark || null, customerUserId, service.id);
+  if (result.changes === 0) throw new Error("客户不属于当前客服");
+}
+
+export function getQuickReplies(actorUserId: number): QuickReplyRow[] {
+  assertActiveUser(actorUserId);
+  const service = getActiveServiceByChatUserId(actorUserId);
+  if (!service) throw new Error("只有客服可以使用快捷语");
+  return db
+    .prepare(`
+      SELECT *
+      FROM quick_replies
+      WHERE staff_id = ?
+        AND deleted_at IS NULL
+      ORDER BY sort_order ASC, id DESC
+    `)
+    .all(service.id) as QuickReplyRow[];
+}
+
+export function createQuickReply(actorUserId: number, input: { title: string; content: string }): QuickReplyRow {
+  assertActiveUser(actorUserId);
+  const service = getActiveServiceByChatUserId(actorUserId);
+  if (!service) throw new Error("只有客服可以配置快捷语");
+  const maxOrder = db
+    .prepare("SELECT COALESCE(MAX(sort_order), 0) + 1 AS value FROM quick_replies WHERE staff_id = ? AND deleted_at IS NULL")
+    .get(service.id) as { value: number };
+  const result = db
+    .prepare("INSERT INTO quick_replies (staff_id, title, content, sort_order) VALUES (?, ?, ?, ?)")
+    .run(service.id, input.title.trim(), input.content.trim(), maxOrder.value);
+  return db.prepare("SELECT * FROM quick_replies WHERE id = ?").get(Number(result.lastInsertRowid)) as QuickReplyRow;
+}
+
+export function updateQuickReply(actorUserId: number, replyId: number, input: { title: string; content: string }): QuickReplyRow {
+  assertActiveUser(actorUserId);
+  const service = getActiveServiceByChatUserId(actorUserId);
+  if (!service) throw new Error("只有客服可以配置快捷语");
+  const result = db
+    .prepare(`
+      UPDATE quick_replies
+      SET title = ?, content = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND staff_id = ?
+        AND deleted_at IS NULL
+    `)
+    .run(input.title.trim(), input.content.trim(), replyId, service.id);
+  if (result.changes === 0) throw new Error("快捷语不存在");
+  return db.prepare("SELECT * FROM quick_replies WHERE id = ?").get(replyId) as QuickReplyRow;
+}
+
+export function deleteQuickReply(actorUserId: number, replyId: number) {
+  assertActiveUser(actorUserId);
+  const service = getActiveServiceByChatUserId(actorUserId);
+  if (!service) throw new Error("只有客服可以配置快捷语");
+  const result = db
+    .prepare("UPDATE quick_replies SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND staff_id = ? AND deleted_at IS NULL")
+    .run(replyId, service.id);
+  if (result.changes === 0) throw new Error("快捷语不存在");
+}
+
+export function reorderQuickReplies(actorUserId: number, replyIds: number[]): QuickReplyRow[] {
+  assertActiveUser(actorUserId);
+  const service = getActiveServiceByChatUserId(actorUserId);
+  if (!service) throw new Error("只有客服可以配置快捷语");
+  const existing = db
+    .prepare("SELECT id FROM quick_replies WHERE staff_id = ? AND deleted_at IS NULL")
+    .all(service.id) as Array<{ id: number }>;
+  const existingIds = new Set(existing.map((item) => item.id));
+  const uniqueIds = Array.from(new Set(replyIds));
+  if (uniqueIds.length !== existingIds.size || uniqueIds.some((id) => !existingIds.has(id))) {
+    throw new Error("快捷语顺序不完整");
+  }
+  const update = db.transaction(() => {
+    uniqueIds.forEach((id, index) => {
+      db.prepare("UPDATE quick_replies SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND staff_id = ?").run(index + 1, id, service.id);
+    });
+  });
+  update();
+  return getQuickReplies(actorUserId);
+}
+
 export function setStaffStatus(actorId: number, staffId: number, status: "active" | "disabled") {
   const actor = assertStaffAccess(actorId, ["super_admin"]);
   const target = getStaffById(staffId);
@@ -550,6 +706,7 @@ export function deleteStaffAccount(actorId: number, staffId: number) {
   if (!target) throw new Error("客服不存在");
   if (target.role === "super_admin") throw new Error("超级管理员不能删除");
   db.prepare("UPDATE staff_accounts SET status = 'disabled', deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(staffId);
+  db.prepare("UPDATE invite_links SET status = 'disabled', deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE owner_staff_id = ? AND deleted_at IS NULL").run(staffId);
   if (target.chat_user_id) {
     db.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(target.chat_user_id);
   }
@@ -566,7 +723,7 @@ export function getVisibleInviteLinks(staffId: number): InviteLinkRow[] {
   let sql = `
     SELECT invite_links.*, owner.display_name AS owner_name, owner.role AS owner_role
     FROM invite_links
-    JOIN staff_accounts owner ON owner.id = invite_links.owner_staff_id
+    LEFT JOIN staff_accounts owner ON owner.id = invite_links.owner_staff_id
   `;
   const params: number[] = [];
   sql += " WHERE invite_links.deleted_at IS NULL";
@@ -587,7 +744,7 @@ export function getInviteLinkByCode(code: string): InviteLinkRow | null {
         JOIN staff_accounts owner ON owner.id = invite_links.owner_staff_id
         WHERE invite_links.code = ?
           AND invite_links.deleted_at IS NULL
-      `)
+    `)
       .get(code) as InviteLinkRow | undefined) ?? null
   );
 }
@@ -629,8 +786,9 @@ export function deleteInviteLink(actorId: number, linkId: number) {
   const link = db.prepare("SELECT * FROM invite_links WHERE id = ? AND deleted_at IS NULL").get(linkId) as InviteLinkRow | undefined;
   if (!link) throw new Error("链接不存在");
   const owner = getStaffById(link.owner_staff_id);
-  if (!owner) throw new Error("链接归属不存在");
-  if (actor.role === "service" && owner.id !== actor.id) throw new Error("没有权限");
+  if (actor.role === "service") {
+    if (!owner || owner.id !== actor.id) throw new Error("没有权限");
+  }
   db.prepare("UPDATE invite_links SET status = 'disabled', deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(linkId);
 }
 
@@ -642,10 +800,42 @@ export function assignCustomerToInvite(userId: number, inviteCode: string | null
   if (!owner || owner.status !== "active" || !owner.chat_user_id) return null;
 
   db.prepare("UPDATE invite_links SET visits = visits + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(invite.id);
-  const existing = db.prepare("SELECT 1 FROM customer_assignments WHERE user_id = ?").get(userId);
-  if (!existing) {
-    db.prepare("INSERT INTO customer_assignments (user_id, staff_id, invite_link_id) VALUES (?, ?, ?)").run(userId, owner.id, invite.id);
+  const existing = db
+    .prepare(`
+      SELECT
+        ca.user_id,
+        ca.staff_id,
+        ca.invite_link_id,
+        staff.status AS staff_status,
+        staff.deleted_at AS staff_deleted_at
+      FROM customer_assignments ca
+      LEFT JOIN staff_accounts staff ON staff.id = ca.staff_id
+      WHERE ca.user_id = ?
+    `)
+    .get(userId) as
+    | {
+        user_id: number;
+        staff_id: number;
+        invite_link_id: number | null;
+        staff_status: string | null;
+        staff_deleted_at: string | null;
+      }
+    | undefined;
+  const shouldReplace =
+    !existing ||
+    !existing.staff_id ||
+    existing.staff_status !== "active" ||
+    Boolean(existing.staff_deleted_at);
+
+  if (shouldReplace) {
+    if (existing) {
+      db.prepare("UPDATE customer_assignments SET staff_id = ?, invite_link_id = ? WHERE user_id = ?").run(owner.id, invite.id, userId);
+    } else {
+      db.prepare("INSERT INTO customer_assignments (user_id, staff_id, invite_link_id) VALUES (?, ?, ?)").run(userId, owner.id, invite.id);
+    }
     db.prepare("UPDATE invite_links SET customers = customers + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(invite.id);
+  } else if (existing.invite_link_id !== invite.id) {
+    db.prepare("UPDATE customer_assignments SET invite_link_id = ? WHERE user_id = ?").run(invite.id, userId);
   }
   return { invite, owner };
 }
@@ -801,6 +991,23 @@ export function deleteFriend(userId: number, peerId: number) {
   return conversation.id;
 }
 
+export function getDirectConversationPeerId(conversationId: number, userId: number) {
+  assertActiveUser(userId);
+  const row = db
+    .prepare(`
+      SELECT CASE WHEN cm1.user_id = ? THEN cm2.user_id ELSE cm1.user_id END AS peer_id
+      FROM conversation_members cm1
+      JOIN conversation_members cm2 ON cm2.conversation_id = cm1.conversation_id AND cm2.user_id != cm1.user_id
+      JOIN conversations c ON c.id = cm1.conversation_id AND c.type = 'direct'
+      WHERE cm1.conversation_id = ?
+        AND cm1.user_id = ?
+        AND cm1.deleted_at IS NULL
+      LIMIT 1
+    `)
+    .get(userId, conversationId, userId) as { peer_id: number } | undefined;
+  return row?.peer_id ?? null;
+}
+
 export function getConversations(userId: number): ConversationRow[] {
   const currentUser = assertActiveUser(userId);
   const serviceAccount = db
@@ -841,7 +1048,12 @@ export function getConversations(userId: number): ConversationRow[] {
         m.created_at AS last_message_at,
         CASE WHEN c.type = 'self' THEN self_user.id ELSE peer.id END AS peer_id,
         CASE WHEN c.type = 'self' THEN self_user.phone ELSE peer.phone END AS peer_phone,
-        CASE WHEN c.type = 'self' THEN self_user.nickname ELSE peer.nickname END AS peer_nickname,
+        CASE
+          WHEN c.type = 'self' THEN self_user.nickname
+          WHEN @staffId IS NOT NULL THEN COALESCE(NULLIF(display_assignment.remark_name, ''), peer.nickname)
+          ELSE peer.nickname
+        END AS peer_nickname,
+        CASE WHEN c.type = 'self' THEN self_user.avatar_url ELSE peer.avatar_url END AS peer_avatar_url,
         CASE WHEN c.type = 'self' THEN self_user.last_seen_at ELSE peer.last_seen_at END AS peer_last_seen_at
       FROM conversations c
       JOIN conversation_members cm ON cm.conversation_id = c.id AND cm.user_id = @userId
@@ -854,6 +1066,7 @@ export function getConversations(userId: number): ConversationRow[] {
       )
       LEFT JOIN conversation_members peer_cm ON peer_cm.conversation_id = c.id AND peer_cm.user_id != @userId
       LEFT JOIN users peer ON peer.id = peer_cm.user_id
+      LEFT JOIN customer_assignments display_assignment ON display_assignment.user_id = peer.id AND display_assignment.staff_id = @staffId
       WHERE cm.deleted_at IS NULL
         AND (
           c.type = 'self'
@@ -888,7 +1101,7 @@ export function getMessages(conversationId: number, userId: number): MessageRow[
 
   return db
     .prepare(`
-      SELECT messages.*, users.nickname AS sender_nickname
+      SELECT messages.*, users.nickname AS sender_nickname, users.avatar_url AS sender_avatar_url
       FROM messages
       JOIN users ON users.id = messages.sender_id
       WHERE messages.conversation_id = ?
@@ -926,7 +1139,7 @@ export function createMessage(input: NewMessageInput): MessageRow {
   const messageId = create();
   return db
     .prepare(`
-      SELECT messages.*, users.nickname AS sender_nickname
+      SELECT messages.*, users.nickname AS sender_nickname, users.avatar_url AS sender_avatar_url
       FROM messages
       JOIN users ON users.id = messages.sender_id
       WHERE messages.id = ?
@@ -940,7 +1153,7 @@ export function getMessagesByIds(messageIds: number[], userId: number): MessageR
   const placeholders = messageIds.map(() => "?").join(",");
   return db
     .prepare(`
-      SELECT messages.*, users.nickname AS sender_nickname
+      SELECT messages.*, users.nickname AS sender_nickname, users.avatar_url AS sender_avatar_url
       FROM messages
       JOIN users ON users.id = messages.sender_id
       JOIN conversation_members cm ON cm.conversation_id = messages.conversation_id AND cm.user_id = ?

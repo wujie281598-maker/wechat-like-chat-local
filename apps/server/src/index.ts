@@ -15,8 +15,10 @@ import {
   createInviteLink,
   createInviteNickname,
   createStaffAccount,
+  createQuickReply,
   deleteFriend,
   deleteInviteLink,
+  deleteQuickReply,
   deleteStaffAccount,
   getAdminSettings,
   getAllUsers,
@@ -28,13 +30,19 @@ import {
   getOrCreateDirectConversation,
   getOrCreateUser,
   getOrCreateUserWithNickname,
+  getQuickReplies,
   getStaffById,
   getStaffPublicById,
   getUserByPhone,
   getVisibleInviteLinks,
   getVisibleStaff,
   getUsers,
+  getDirectConversationPeerId,
+  updateCustomerRemark,
+  updateQuickReply,
+  updateStaffAvatar,
   recallMessage,
+  reorderQuickReplies,
   setConversationPinned,
   setInviteLinkStatus,
   setStaffStatus,
@@ -102,11 +110,12 @@ app.post("/api/login", (request, response) => {
     return;
   }
   const invite = parsed.data.inviteCode ? getInviteLinkByCode(parsed.data.inviteCode) : null;
-  if (existingUser && !getAssignedServiceChatUserId(existingUser.id)) {
-    response.status(403).json({ error: "未匹配专属客服" });
-    return;
-  }
-  if (!existingUser && (!invite || invite.status !== "active")) {
+  if (!parsed.data.inviteCode) {
+    if (!existingUser || !getAssignedServiceChatUserId(existingUser.id)) {
+      response.status(403).json({ error: "未匹配专属客服" });
+      return;
+    }
+  } else if (!invite || invite.status !== "active") {
     response.status(403).json({ error: "未匹配专属客服" });
     return;
   }
@@ -116,6 +125,7 @@ app.post("/api/login", (request, response) => {
   const user = inviteNickname ? getOrCreateUserWithNickname(normalizedPhone, inviteNickname) : getOrCreateUser(normalizedPhone);
   const inviteAssignment = assignCustomerToInvite(user.id, parsed.data.inviteCode ?? null);
   const serviceChatUserId = inviteAssignment?.owner.chat_user_id ?? null;
+  const openConversationId = serviceChatUserId ? getOrCreateDirectConversation(user.id, serviceChatUserId) : null;
   const settings = inviteAssignment
     ? {
         autoReplyEnabled: Boolean(inviteAssignment.invite.auto_reply_enabled),
@@ -125,7 +135,7 @@ app.post("/api/login", (request, response) => {
   const senderUser = serviceChatUserId ? getAllUsers().find((item) => item.id === serviceChatUserId) : getAllUsers()[0];
   if (!wasExisting && settings.autoReplyEnabled && senderUser && senderUser.id !== user.id) {
     try {
-      const conversationId = getOrCreateDirectConversation(senderUser.id, user.id);
+      const conversationId = openConversationId ?? getOrCreateDirectConversation(senderUser.id, user.id);
       const body = settings.autoReplyText.replace(/\{nickname\}/g, user.nickname);
       const message = createMessage({
         conversationId,
@@ -139,7 +149,7 @@ app.post("/api/login", (request, response) => {
       // Auto reply should never block login.
     }
   }
-  response.json({ user });
+  response.json({ user, openConversationId });
 });
 
 function makeStaffToken(staffId: number) {
@@ -278,6 +288,23 @@ app.delete("/api/admin/staff/:id", (request, response) => {
     response.json({ ok: true });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "删除失败" });
+  }
+});
+
+app.post("/api/admin/staff/:id/avatar", upload.single("file"), (request, response) => {
+  const actor = requireStaff(request, response, ["super_admin"]);
+  if (!actor) return;
+  const staffId = Number(request.params.id);
+  const file = request.file;
+  if (!staffId || !file) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  try {
+    const avatarUrl = `/uploads/${file.filename}`;
+    response.json({ staff: updateStaffAvatar(actor.id, staffId, avatarUrl) });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "上传失败" });
   }
 });
 
@@ -454,6 +481,26 @@ app.delete("/api/friends/:peerId", (request, response) => {
   }
 });
 
+app.post("/api/conversations/:id/remark", (request, response) => {
+  const conversationId = Number(request.params.id);
+  const parsed = z.object({ userId: z.number(), remarkName: z.string().trim().max(40) }).safeParse(request.body);
+  if (!conversationId || !parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  try {
+    const peerId = getDirectConversationPeerId(conversationId, parsed.data.userId);
+    if (!peerId) {
+      response.status(400).json({ error: "会话不存在" });
+      return;
+    }
+    updateCustomerRemark(parsed.data.userId, peerId, parsed.data.remarkName);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "备注失败" });
+  }
+});
+
 app.patch("/api/conversations/:id/pin", (request, response) => {
   const conversationId = Number(request.params.id);
   const parsed = z.object({ userId: z.number(), pinned: z.boolean() }).safeParse(request.body);
@@ -513,6 +560,91 @@ app.post("/api/conversations/:id/messages", (request, response) => {
     response.json({ message });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "发送失败" });
+  }
+});
+
+app.get("/api/quick-replies", (request, response) => {
+  const userId = Number(request.query.userId);
+  if (!userId) {
+    response.status(400).json({ error: "缺少 userId" });
+    return;
+  }
+  try {
+    response.json({ quickReplies: getQuickReplies(userId) });
+  } catch (error) {
+    response.status(403).json({ error: error instanceof Error ? error.message : "快捷语不可用" });
+  }
+});
+
+app.post("/api/quick-replies", (request, response) => {
+  const parsed = z
+    .object({
+      userId: z.number(),
+      title: z.string().trim().min(1).max(40),
+      content: z.string().trim().min(1).max(1000),
+    })
+    .safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  try {
+    response.json({ quickReply: createQuickReply(parsed.data.userId, parsed.data) });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "创建快捷语失败" });
+  }
+});
+
+app.patch("/api/quick-replies/:id", (request, response) => {
+  const replyId = Number(request.params.id);
+  const parsed = z
+    .object({
+      userId: z.number(),
+      title: z.string().trim().min(1).max(40),
+      content: z.string().trim().min(1).max(1000),
+    })
+    .safeParse(request.body);
+  if (!replyId || !parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  try {
+    response.json({ quickReply: updateQuickReply(parsed.data.userId, replyId, parsed.data) });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "更新快捷语失败" });
+  }
+});
+
+app.delete("/api/quick-replies/:id", (request, response) => {
+  const replyId = Number(request.params.id);
+  const userId = Number(request.query.userId);
+  if (!replyId || !userId) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  try {
+    deleteQuickReply(userId, replyId);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "删除快捷语失败" });
+  }
+});
+
+app.patch("/api/quick-replies/reorder/list", (request, response) => {
+  const parsed = z
+    .object({
+      userId: z.number(),
+      replyIds: z.array(z.number()).min(1),
+    })
+    .safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  try {
+    response.json({ quickReplies: reorderQuickReplies(parsed.data.userId, parsed.data.replyIds) });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "排序失败" });
   }
 });
 
