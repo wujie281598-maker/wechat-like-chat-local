@@ -6,8 +6,10 @@ import {
   Check,
   File as FileIcon,
   FileStack,
+  GripVertical,
   ImageIcon,
   MessageCircle,
+  MessageSquareText,
   Pin,
   PinOff,
   Play,
@@ -15,6 +17,8 @@ import {
   Search,
   Send,
   SendHorizontal,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   UserPlus,
   UsersRound,
@@ -24,8 +28,6 @@ import {
 import "./styles.css";
 
 const API_URL = `${window.location.protocol}//${window.location.hostname}:4000`;
-const APP_VERSION = "v2026-08-21-1824";
-
 function makeClientId(userId: number) {
   const randomUuid = globalThis.crypto?.randomUUID?.();
   if (randomUuid) return `${userId}-${Date.now()}-${randomUuid}`;
@@ -44,10 +46,30 @@ function avatarRoleClass(phone: string | null | undefined) {
   return phone === "admin" || phone?.startsWith("staff:") ? "service" : "customer";
 }
 
+function avatarUrl(value: string | null | undefined) {
+  if (!value) return "";
+  return value.startsWith("http") ? value : `${API_URL}${value}`;
+}
+
+function avatarStyle(value: string | null | undefined): React.CSSProperties | undefined {
+  if (!value) return undefined;
+  return {
+    backgroundImage: `url(${avatarUrl(value)})`,
+    backgroundSize: "cover",
+    backgroundPosition: "center",
+    color: "transparent",
+  };
+}
+
+function displayNameForConversation(conversation: Conversation) {
+  return conversation.peer_nickname ?? "会话";
+}
+
 type User = {
   id: number;
   phone: string;
   nickname: string;
+  avatar_url: string | null;
   sequence_number: number;
   status: string;
   created_at: string;
@@ -66,6 +88,7 @@ type Conversation = {
   peer_id: number | null;
   peer_phone: string | null;
   peer_nickname: string | null;
+  peer_avatar_url: string | null;
   peer_last_seen_at: string | null;
 };
 
@@ -110,6 +133,16 @@ type BundleBody = {
   }>;
 };
 
+type QuickReply = {
+  id: number;
+  staff_id: number;
+  title: string;
+  content: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
 type AdminSettings = {
   autoReplyEnabled: boolean;
   autoReplyText: string;
@@ -131,6 +164,7 @@ type StaffAccount = {
   updated_at: string;
   parent_name: string | null;
   chat_nickname: string | null;
+  avatar_url: string | null;
 };
 
 type InviteLink = {
@@ -226,11 +260,11 @@ function formatDuration(seconds: number | null) {
   return `${minutes}:${String(rest).padStart(2, "0")}`;
 }
 
-function Login({ onLogin }: { onLogin: (user: User) => void }) {
+function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number | null) => void }) {
   const [loginMode, setLoginMode] = useState<"customer" | "service">("customer");
   const [phone, setPhone] = useState("");
   const [serviceUsername, setServiceUsername] = useState("");
-  const [servicePassword, setServicePassword] = useState("000000");
+  const [servicePassword, setServicePassword] = useState("");
   const inviteCode = useMemo(() => new URLSearchParams(window.location.search).get("invite") ?? "", []);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -246,12 +280,16 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
               method: "POST",
               body: JSON.stringify({ username: serviceUsername, password: servicePassword }),
             })
-          : await api<{ user: User }>("/api/login", {
+          : await api<{ user: User; openConversationId: number | null }>("/api/login", {
               method: "POST",
               body: JSON.stringify({ phone, inviteCode: inviteCode || undefined }),
             });
       localStorage.setItem("local-chat-user", JSON.stringify(result.user));
-      onLogin(result.user);
+      const openConversationId =
+        "openConversationId" in result && typeof result.openConversationId === "number"
+          ? result.openConversationId
+          : null;
+      onLogin(result.user, openConversationId);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "登录失败");
     } finally {
@@ -266,7 +304,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
           <MessageCircle size={30} strokeWidth={2.4} />
         </div>
         <h1>本地聊天</h1>
-        <p>{loginMode === "service" ? "客服输入专属账号和密码进入聊天端。" : inviteCode ? "通过专属链接进入，输入手机号后会自动分配客服。" : "输入手机号直接进入，本地开发版不会发送验证码。"}</p>
+        <p>{loginMode === "service" ? "请输入客服账号信息进入聊天。" : inviteCode ? "请输入手机号进入专属服务。" : "请输入手机号进入聊天。"}</p>
         <div className="login-mode-tabs">
           <button type="button" className={loginMode === "customer" ? "active" : ""} onClick={() => setLoginMode("customer")}>客户</button>
           <button type="button" className={loginMode === "service" ? "active" : ""} onClick={() => setLoginMode("service")}>客服</button>
@@ -279,7 +317,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
                 id="phone"
                 value={phone}
                 onChange={(event) => setPhone(event.target.value)}
-                placeholder="例如 13800138000"
+                placeholder="请输入手机号"
                 inputMode="tel"
                 autoComplete="tel"
               />
@@ -287,9 +325,9 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
           ) : (
             <>
               <label htmlFor="service-username">客服账号</label>
-              <input id="service-username" value={serviceUsername} onChange={(event) => setServiceUsername(event.target.value)} placeholder="例如 xiaoming" autoComplete="username" />
+              <input id="service-username" value={serviceUsername} onChange={(event) => setServiceUsername(event.target.value)} placeholder="请输入客服账号" autoComplete="username" />
               <label htmlFor="service-password">客服密码</label>
-              <input id="service-password" type="password" value={servicePassword} onChange={(event) => setServicePassword(event.target.value)} placeholder="默认 000000" autoComplete="current-password" />
+              <input id="service-password" type="password" value={servicePassword} onChange={(event) => setServicePassword(event.target.value)} placeholder="请输入客服密码" autoComplete="current-password" />
             </>
           )}
           {error ? <div className="form-error">{error}</div> : null}
@@ -321,8 +359,10 @@ function AdminApp() {
   const [saving, setSaving] = useState(false);
   const [activeAdminPage, setActiveAdminPage] = useState<AdminPage>("staff");
   const [customerPage, setCustomerPage] = useState(1);
-  const [staffForm, setStaffForm] = useState({ username: "", password: "000000", displayName: "", customerPrefix: "" });
+  const [staffForm, setStaffForm] = useState({ username: "", password: "", displayName: "", customerPrefix: "" });
   const [linkForm, setLinkForm] = useState({ title: "", ownerStaffId: "", autoReplyEnabled: true, autoReplyText: "{nickname} 你好抖音评论 0.3元一条有效评论，没有数量限制。24小时都可以发 当天晚上10点前统一结算。" });
+  const staffAvatarInputRef = useRef<HTMLInputElement | null>(null);
+  const staffAvatarTargetRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -395,7 +435,7 @@ function AdminApp() {
           customerPrefix: staffForm.customerPrefix.trim(),
         }),
       });
-      setStaffForm({ username: "", password: "000000", displayName: "", customerPrefix: "" });
+      setStaffForm({ username: "", password: "", displayName: "", customerPrefix: "" });
       await loadOverview();
     } catch (requestError) {
       showError(requestError instanceof Error ? requestError.message : "创建失败");
@@ -424,6 +464,29 @@ function AdminApp() {
       await loadOverview();
     } catch (requestError) {
       showError(requestError instanceof Error ? requestError.message : "删除失败");
+    }
+  }
+
+  async function uploadStaffAvatar(staff: StaffAccount, file: File | null) {
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    setError("");
+    try {
+      await fetch(`${API_URL}/api/admin/staff/${staff.id}/avatar`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      }).then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error ?? "上传失败");
+        return data;
+      });
+      await loadOverview();
+    } catch (requestError) {
+      showError(requestError instanceof Error ? requestError.message : "上传失败");
+    } finally {
+      if (staffAvatarInputRef.current) staffAvatarInputRef.current.value = "";
     }
   }
 
@@ -495,7 +558,7 @@ function AdminApp() {
       <main className="admin-login-shell">
         <form className="admin-login-panel" onSubmit={login}>
           <strong>后台管理</strong>
-          <span>超级管理员默认账号 admin，密码 000000。</span>
+          <span>请输入管理员账号信息。</span>
           <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="账号" autoComplete="username" />
           <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码" autoComplete="current-password" />
           {error ? <div className="form-error">{error}</div> : null}
@@ -556,26 +619,54 @@ function AdminApp() {
           <header>
             <div>
               <strong>客服</strong>
-              <span>添加客服账号后，客服可直接用账号和密码登录聊天端。默认密码 000000，可先统一使用。</span>
+              <span>添加客服账号后，客服可直接用账号和密码登录聊天端。</span>
             </div>
           </header>
           <form className="admin-form-grid service-form" onSubmit={createStaff}>
             <input value={staffForm.displayName} onChange={(event) => setStaffForm((form) => ({ ...form, displayName: event.target.value }))} placeholder="客服名称" />
-            <input value={staffForm.username} onChange={(event) => setStaffForm((form) => ({ ...form, username: event.target.value }))} placeholder="登录账号，如 xiaoming" />
-            <input value={staffForm.customerPrefix} onChange={(event) => setStaffForm((form) => ({ ...form, customerPrefix: event.target.value }))} placeholder="客户编号前缀，如 aa" />
-            <input value={staffForm.password} onChange={(event) => setStaffForm((form) => ({ ...form, password: event.target.value }))} placeholder="初始密码 000000" />
+            <input value={staffForm.username} onChange={(event) => setStaffForm((form) => ({ ...form, username: event.target.value }))} placeholder="登录账号" />
+            <input value={staffForm.customerPrefix} onChange={(event) => setStaffForm((form) => ({ ...form, customerPrefix: event.target.value }))} placeholder="客户编号前缀" />
+            <input type="password" value={staffForm.password} onChange={(event) => setStaffForm((form) => ({ ...form, password: event.target.value }))} placeholder="初始密码" autoComplete="new-password" />
             <button className="admin-primary" type="submit">添加客服</button>
           </form>
+          <input
+            ref={staffAvatarInputRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(event) => {
+              const targetId = staffAvatarTargetRef.current;
+              const staffItem = serviceAccounts.find((item) => item.id === targetId);
+              const file = event.target.files?.[0] ?? null;
+              if (staffItem && file) void uploadStaffAvatar(staffItem, file);
+            }}
+          />
           <div className="admin-table staff-table simple-staff-table">
-            <div className="admin-table-head"><span>客服名称</span><span>账号</span><span>聊天显示</span><span>客户编号</span><span>状态</span><span>操作</span></div>
+            <div className="admin-table-head"><span>头像</span><span>客服名称</span><span>账号</span><span>聊天显示</span><span>客户编号</span><span>状态</span><span>操作</span></div>
             {serviceAccounts.map((item) => (
               <div className="admin-table-row" key={item.id}>
+                <button
+                  className={`avatar tiny avatar-button admin-avatar-picker ${avatarRoleClass(`staff:${item.username}`)}`}
+                  type="button"
+                  style={avatarStyle(item.avatar_url)}
+                  onClick={() => {
+                    staffAvatarTargetRef.current = item.id;
+                    staffAvatarInputRef.current?.click();
+                  }}
+                  aria-label={`设置${item.display_name}头像`}
+                >
+                  {avatarLabel(item.display_name)}
+                </button>
                 <strong>{item.display_name}</strong>
                 <span>{item.username}</span>
                 <span>{item.display_name}</span>
-              <span>{item.customer_prefix ? `${item.customer_prefix}${item.next_customer_sequence} 起` : "旧数据"}</span>
+                <span>{item.customer_prefix ? `${item.customer_prefix}${item.next_customer_sequence} 起` : "旧数据"}</span>
                 <span className={item.status === "active" ? "status-active" : "status-disabled"}>{item.status === "active" ? "启用" : "禁用"}</span>
-                <div className="row-actions">
+                <div className="row-actions staff-row-actions">
+                  <button onClick={() => {
+                    staffAvatarTargetRef.current = item.id;
+                    staffAvatarInputRef.current?.click();
+                  }}>头像</button>
                   <button onClick={() => void toggleStaffStatus(item)}>{item.status === "active" ? "禁用" : "启用"}</button>
                   <button className="danger-action" onClick={() => void deleteStaff(item)}>删除</button>
                 </div>
@@ -630,7 +721,7 @@ function AdminApp() {
           <header>
             <div>
               <strong>全局自动回复</strong>
-              <span>没有通过链接进入的新客户，仍由 A1 发送这套默认话术。</span>
+              <span>配置通用自动回复内容。</span>
             </div>
             <label className="admin-switch"><input type="checkbox" checked={settingsDraft?.autoReplyEnabled ?? false} onChange={(event) => setSettingsDraft((draft) => (draft ? { ...draft, autoReplyEnabled: event.target.checked } : draft))} />启用</label>
           </header>
@@ -656,7 +747,9 @@ function AdminApp() {
                 <span>{user.phone}</span>
                 <span className={user.status === "active" ? "status-active" : "status-disabled"}>{user.status === "active" ? "启用" : "禁用"}</span>
                 <span>{formatTime(user.last_seen_at)}</span>
-                <button onClick={() => void toggleUserStatus(user)} disabled={user.sequence_number === 1}>{user.sequence_number === 1 ? "保留" : user.status === "active" ? "禁用" : "启用"}</button>
+                <div className="row-actions">
+                  <button onClick={() => void toggleUserStatus(user)} disabled={user.sequence_number === 1}>{user.sequence_number === 1 ? "保留" : user.status === "active" ? "禁用" : "启用"}</button>
+                </div>
               </div>
             ))}
           </div>
@@ -706,6 +799,7 @@ function App() {
   const [users, setUsers] = useState<User[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
+  const [pendingConversationId, setPendingConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
@@ -724,8 +818,12 @@ function App() {
   const [cameraError, setCameraError] = useState("");
   const [recording, setRecording] = useState(false);
   const [notice, setNotice] = useState("");
-  const [sendDebug, setSendDebug] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
+  const [quickPanelOpen, setQuickPanelOpen] = useState(false);
+  const [quickPanelCollapsed, setQuickPanelCollapsed] = useState(false);
+  const [quickForm, setQuickForm] = useState({ id: 0, content: "" });
+  const [draggingQuickId, setDraggingQuickId] = useState<number | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -753,6 +851,15 @@ function App() {
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
+
+  useEffect(() => {
+    if (!pendingConversationId || !currentUser) return;
+    const nextConversationId = pendingConversationId;
+    setPendingConversationId(null);
+    setActiveConversationId(nextConversationId);
+    setMode("chats");
+    void loadMessages(nextConversationId).catch(handleSessionError);
+  }, [pendingConversationId, currentUser]);
 
   useEffect(() => {
     draftRef.current = draft;
@@ -808,7 +915,8 @@ function App() {
       void loadConversations(currentUser.id).catch(handleSessionError);
     });
     setSocket(nextSocket);
-    void Promise.all([loadUsers(currentUser.id), loadConversations(currentUser.id)]).catch(handleSessionError);
+    void Promise.all([loadUsers(currentUser.id), loadConversations(currentUser.id), loadQuickReplies(currentUser)])
+      .catch(handleSessionError);
     return () => {
       nextSocket.disconnect();
     };
@@ -856,6 +964,15 @@ function App() {
     setConversations(result.conversations);
   }
 
+  async function loadQuickReplies(user: User) {
+    if (!user.phone.startsWith("staff:")) {
+      setQuickReplies([]);
+      return;
+    }
+    const result = await api<{ quickReplies: QuickReply[] }>(`/api/quick-replies?userId=${user.id}`);
+    setQuickReplies(result.quickReplies);
+  }
+
   async function openDirect(peerId: number) {
     if (!currentUser) return;
     const result = await api<{ conversationId: number }>("/api/conversations/direct", {
@@ -881,24 +998,21 @@ function App() {
 
   async function sendMessage(event?: React.SyntheticEvent) {
     event?.preventDefault();
-    setSendDebug("发送触发");
     if (sendingRef.current) {
-      setSendDebug("正在发送中");
       return;
     }
     const inputValue = composerInputRef.current?.value ?? draftRef.current;
     const currentUserValue = currentUserRef.current;
     const activeConversationIdValue = activeConversationIdRef.current;
     if (!currentUserValue) {
-      setSendDebug("未登录，不能发送");
+      setNotice("未登录，不能发送");
       return;
     }
     if (!activeConversationIdValue) {
-      setSendDebug("没有打开会话");
+      setNotice("没有打开会话");
       return;
     }
     if (!inputValue.trim()) {
-      setSendDebug("输入框是空的");
       return;
     }
     const body = inputValue.trim();
@@ -913,10 +1027,9 @@ function App() {
           clientId: makeClientId(currentUserValue.id),
         }),
       });
-      setSendDebug("发送成功");
       scrollToBottom("smooth");
     } catch (error) {
-      setSendDebug(error instanceof Error ? `发送失败：${error.message}` : "发送失败");
+      setNotice(error instanceof Error ? `发送失败：${error.message}` : "发送失败");
       setDraft(body);
     } finally {
       sendingRef.current = false;
@@ -972,8 +1085,27 @@ function App() {
     }
   }
 
+  async function remarkConversation(conversation: Conversation) {
+    if (!currentUser || !currentUser.phone.startsWith("staff:") || !conversation.peer_id || conversation.peer_id === currentUser.id) return;
+    const nextRemark = window.prompt("备注客户名字", conversation.peer_nickname ?? "");
+    if (nextRemark === null) return;
+    try {
+      await api<{ ok: true }>(`/api/conversations/${conversation.id}/remark`, {
+        method: "POST",
+        body: JSON.stringify({ userId: currentUser.id, remarkName: nextRemark }),
+      });
+      setConversationMenu(null);
+      await loadUsers(currentUser.id);
+      await loadConversations(currentUser.id);
+      if (activeConversationId === conversation.id) await loadMessages(conversation.id);
+      setNotice("备注已更新");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "备注失败");
+    }
+  }
+
   function openConversationMenu(conversationId: number, x: number, y: number) {
-    const menuWidth = 152;
+    const menuWidth = 228;
     const menuHeight = 44;
     const margin = 10;
     setConversationMenu({
@@ -1042,6 +1174,18 @@ function App() {
       if (fileInputRef.current) fileInputRef.current.value = "";
       if (captureInputRef.current) captureInputRef.current.value = "";
     }
+  }
+
+  async function uploadDroppedFiles(files: File[]) {
+    const transfer = new DataTransfer();
+    files
+      .filter((file) => file.type.startsWith("image/") || file.type.startsWith("video/"))
+      .forEach((file) => transfer.items.add(file));
+    if (transfer.files.length === 0) {
+      setNotice("只能发送图片或视频");
+      return;
+    }
+    await uploadFiles(transfer.files, "picker");
   }
 
   async function uploadBlob(blob: Blob, fileName: string) {
@@ -1170,8 +1314,106 @@ function App() {
   function toggleToolPanel() {
     setSelectedMessageIds([]);
     setActionMenu(null);
+    setQuickPanelOpen(false);
     composerInputRef.current?.blur();
     setToolPanelOpen((open) => !open);
+  }
+
+  function toggleQuickPanel() {
+    setSelectedMessageIds([]);
+    setActionMenu(null);
+    setToolPanelOpen(false);
+    composerInputRef.current?.blur();
+    setQuickPanelCollapsed(false);
+    setQuickPanelOpen((open) => !open);
+  }
+
+  function insertQuickReply(reply: QuickReply) {
+    setDraft(reply.content);
+    draftRef.current = reply.content;
+    window.setTimeout(() => composerInputRef.current?.focus(), 0);
+  }
+
+  async function sendQuickReply(reply: QuickReply) {
+    if (!currentUser || !activeConversationId) return;
+    const body = reply.content.trim();
+    if (!body) return;
+    try {
+      await api<{ message: ChatMessage }>(`/api/conversations/${activeConversationId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          userId: currentUser.id,
+          body,
+          clientId: makeClientId(currentUser.id),
+        }),
+      });
+      await loadMessages(activeConversationId);
+      await loadConversations(currentUser.id);
+      scrollToBottom("smooth");
+      setNotice("已发送");
+    } catch (error) {
+      setNotice(error instanceof Error ? `发送失败：${error.message}` : "发送失败");
+    }
+  }
+
+  async function saveQuickReply() {
+    if (!currentUser || !currentUser.phone.startsWith("staff:")) return;
+    const content = quickForm.content.trim();
+    if (!content) {
+      setNotice("快捷语内容不能为空");
+      return;
+    }
+    const title = content.slice(0, 40);
+    try {
+      const path = quickForm.id ? `/api/quick-replies/${quickForm.id}` : "/api/quick-replies";
+      await api<{ quickReply: QuickReply }>(path, {
+        method: quickForm.id ? "PATCH" : "POST",
+        body: JSON.stringify({ userId: currentUser.id, title, content }),
+      });
+      setQuickForm({ id: 0, content: "" });
+      await loadQuickReplies(currentUser);
+      setNotice(quickForm.id ? "快捷语已更新" : "快捷语已添加");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "快捷语保存失败");
+    }
+  }
+
+  async function removeQuickReply(reply: QuickReply) {
+    if (!currentUser || !window.confirm(`确定删除快捷语「${reply.title}」吗？`)) return;
+    try {
+      await api<{ ok: true }>(`/api/quick-replies/${reply.id}?userId=${currentUser.id}`, { method: "DELETE" });
+      if (quickForm.id === reply.id) setQuickForm({ id: 0, content: "" });
+      await loadQuickReplies(currentUser);
+      setNotice("快捷语已删除");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "快捷语删除失败");
+    }
+  }
+
+  async function saveQuickReplyOrder(nextReplies: QuickReply[]) {
+    if (!currentUser || !currentUser.phone.startsWith("staff:")) return;
+    setQuickReplies(nextReplies);
+    try {
+      const result = await api<{ quickReplies: QuickReply[] }>("/api/quick-replies/reorder/list", {
+        method: "PATCH",
+        body: JSON.stringify({ userId: currentUser.id, replyIds: nextReplies.map((reply) => reply.id) }),
+      });
+      setQuickReplies(result.quickReplies);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "快捷语排序失败");
+      await loadQuickReplies(currentUser);
+    }
+  }
+
+  function moveQuickReply(dragId: number, targetId: number) {
+    if (dragId === targetId) return;
+    const fromIndex = quickReplies.findIndex((reply) => reply.id === dragId);
+    const toIndex = quickReplies.findIndex((reply) => reply.id === targetId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const nextReplies = [...quickReplies];
+    const [moved] = nextReplies.splice(fromIndex, 1);
+    nextReplies.splice(toIndex, 0, moved);
+    void saveQuickReplyOrder(nextReplies);
   }
 
   function openActionMenu(messageId: number, x: number, y: number) {
@@ -1266,9 +1508,21 @@ function App() {
     setSocket(null);
     setActiveConversationId(null);
     setMessages([]);
+    setQuickReplies([]);
+    setQuickPanelOpen(false);
+    setQuickPanelCollapsed(false);
   }
 
-  if (!currentUser) return <Login onLogin={setCurrentUser} />;
+  if (!currentUser) {
+    return (
+      <Login
+        onLogin={(user, openConversationId) => {
+          setCurrentUser(user);
+          setPendingConversationId(openConversationId ?? null);
+        }}
+      />
+    );
+  }
 
   const keyword = query.trim().toLowerCase();
   const contactUsers = [currentUser, ...users];
@@ -1279,12 +1533,13 @@ function App() {
     return `${conversation.peer_nickname ?? ""}${conversation.peer_phone ?? ""}${preview}`.toLowerCase().includes(keyword);
   });
   const totalUnread = conversations.reduce((sum, conversation) => sum + conversation.unread_count, 0);
+  const isStaffUser = currentUser.phone.startsWith("staff:");
 
   return (
-    <main className={`app-shell ${activeConversation ? "chat-open" : ""} ${toolPanelOpen ? "tool-open" : ""}`}>
+    <main className={`app-shell ${activeConversation ? "chat-open" : ""} ${toolPanelOpen ? "tool-open" : ""} ${quickPanelOpen ? "quick-open" : ""}`}>
       <aside className="sidebar">
         <header className="profile-bar">
-          <button className={`avatar avatar-button ${avatarRoleClass(currentUser.phone)}`} onClick={() => void openDirect(currentUser.id)} aria-label="打开自己的聊天">
+          <button className={`avatar avatar-button ${avatarRoleClass(currentUser.phone)}`} style={avatarStyle(currentUser.avatar_url)} onClick={() => void openDirect(currentUser.id)} aria-label="打开自己的聊天">
             {avatarLabel(currentUser.nickname)}
           </button>
           <div>
@@ -1344,7 +1599,7 @@ function App() {
                     onTouchStart={(event) => handleConversationTouchStart(conversation.id, event)}
                     onTouchEnd={(event) => handleConversationTouchEnd(conversation.id, event)}
                   >
-                    <div className={`avatar small ${avatarRoleClass(conversation.peer_phone)}`}>{avatarLabel(conversation.peer_nickname)}</div>
+                    <div className={`avatar small ${avatarRoleClass(conversation.peer_phone)}`} style={avatarStyle(conversation.peer_avatar_url)}>{avatarLabel(conversation.peer_nickname)}</div>
                     <div className="row-main">
                       <div className="row-title">
                         <strong>{conversation.peer_nickname ?? "会话"}</strong>
@@ -1368,7 +1623,7 @@ function App() {
               const isSelf = user.id === currentUser.id;
               return (
               <button key={user.id} className="list-row" onClick={() => void openDirect(user.id)}>
-                <div className={`avatar small ${avatarRoleClass(user.phone)}`}>{avatarLabel(user.nickname)}</div>
+                <div className={`avatar small ${avatarRoleClass(user.phone)}`} style={avatarStyle(user.avatar_url)}>{avatarLabel(user.nickname)}</div>
                 <div className="row-main">
                   <div className="row-title">
                     <strong>{isSelf ? `${user.nickname}（自己）` : user.nickname}</strong>
@@ -1387,7 +1642,23 @@ function App() {
         </section>
       </aside>
 
-      <section className="chat-panel">
+      <section
+        className="chat-panel"
+        onDragOver={(event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          void uploadDroppedFiles(Array.from(event.dataTransfer.files));
+        }}
+        onPaste={(event) => {
+          const files = Array.from(event.clipboardData.files);
+          if (files.length === 0) return;
+          event.preventDefault();
+          void uploadDroppedFiles(files);
+        }}
+      >
         {activeConversation ? (
           <>
             <header className="chat-header">
@@ -1430,6 +1701,10 @@ function App() {
                   ? currentUser.phone
                   : users.find((user) => user.id === message.sender_id)?.phone ??
                     (activeConversation.peer_id === message.sender_id ? activeConversation.peer_phone : null);
+                const senderAvatarUrl = mine
+                  ? currentUser.avatar_url
+                  : users.find((user) => user.id === message.sender_id)?.avatar_url ??
+                    (activeConversation.peer_id === message.sender_id ? activeConversation.peer_avatar_url : null);
                 if (message.revoked_at) {
                   const canReEdit = mine && Boolean(editableRecalls[message.id]);
                   return (
@@ -1451,7 +1726,7 @@ function App() {
                       </button>
                     ) : null}
                     {!mine ? (
-                      <button className={`avatar tiny avatar-button message-avatar ${avatarRoleClass(senderPhone)}`} onClick={() => void openDirect(message.sender_id)} aria-label={`打开和${message.sender_nickname}的聊天`}>
+                      <button className={`avatar tiny avatar-button message-avatar ${avatarRoleClass(senderPhone)}`} style={avatarStyle(senderAvatarUrl)} onClick={() => void openDirect(message.sender_id)} aria-label={`打开和${message.sender_nickname}的聊天`}>
                         {avatarLabel(message.sender_nickname)}
                       </button>
                     ) : null}
@@ -1489,7 +1764,7 @@ function App() {
                       </button>
                     </div>
                     {mine ? (
-                      <button className={`avatar tiny avatar-button message-avatar mine-avatar ${avatarRoleClass(currentUser.phone)}`} onClick={() => void openDirect(currentUser.id)} aria-label="打开自己的聊天">
+                      <button className={`avatar tiny avatar-button message-avatar mine-avatar ${avatarRoleClass(currentUser.phone)}`} style={avatarStyle(currentUser.avatar_url)} onClick={() => void openDirect(currentUser.id)} aria-label="打开自己的聊天">
                         {avatarLabel(message.sender_nickname)}
                       </button>
                     ) : null}
@@ -1498,8 +1773,7 @@ function App() {
               })}
               <div ref={bottomRef} />
             </div>
-            <div className="send-debug">{APP_VERSION} · {sendDebug || "等待发送"}</div>
-            <div className="composer">
+            <div className={`composer ${isStaffUser ? "has-quick" : ""}`}>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1550,6 +1824,12 @@ function App() {
                 <Send size={18} />
                 <span className="button-hitbox" aria-hidden="true" />
               </button>
+              {isStaffUser ? (
+                <button type="button" className={`quick-button ${quickPanelOpen ? "active" : ""}`} onClick={toggleQuickPanel} aria-label="打开快捷语">
+                  <MessageSquareText size={21} />
+                  <span>快捷语</span>
+                </button>
+              ) : null}
               <button type="button" className="plus-button" onClick={toggleToolPanel} aria-label="打开更多功能">
                 <Plus size={24} />
               </button>
@@ -1570,6 +1850,85 @@ function App() {
           </div>
         )}
       </section>
+      {activeConversation && quickPanelOpen && isStaffUser ? (
+        <aside className={`quick-panel ${quickPanelCollapsed ? "collapsed" : ""}`}>
+          <button
+            type="button"
+            className="quick-collapse"
+            onClick={() => setQuickPanelCollapsed((collapsed) => !collapsed)}
+            aria-label={quickPanelCollapsed ? "展开快捷语" : "收起快捷语"}
+          >
+            {quickPanelCollapsed ? <PanelRightOpen size={18} /> : <PanelRightClose size={18} />}
+            <span>{quickPanelCollapsed ? "展开" : "收起"}</span>
+          </button>
+          {!quickPanelCollapsed ? (
+            <>
+              <header className="quick-panel-head">
+                <strong>快捷语</strong>
+                <span>{quickReplies.length} 条</span>
+              </header>
+              <section className="quick-list">
+                {quickReplies.length ? (
+                  quickReplies.map((reply) => (
+                    <article
+                      key={reply.id}
+                      className={`quick-item ${draggingQuickId === reply.id ? "dragging" : ""}`}
+                      draggable
+                      onDragStart={(event) => {
+                        setDraggingQuickId(reply.id);
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", String(reply.id));
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const dragId = Number(event.dataTransfer.getData("text/plain") || draggingQuickId);
+                        setDraggingQuickId(null);
+                        if (dragId) moveQuickReply(dragId, reply.id);
+                      }}
+                      onDragEnd={() => setDraggingQuickId(null)}
+                    >
+                      <span className="quick-drag-handle" aria-label="拖拽排序">
+                        <GripVertical size={16} />
+                      </span>
+                      <button className="quick-content" type="button" onClick={() => insertQuickReply(reply)}>
+                        <span>{reply.content}</span>
+                      </button>
+                      <div className="quick-actions">
+                        <button type="button" className="quick-send" onClick={() => void sendQuickReply(reply)}>发送</button>
+                        <button type="button" onClick={() => setQuickForm({ id: reply.id, content: reply.content })}>编辑</button>
+                        <button type="button" onClick={() => void removeQuickReply(reply)}>删除</button>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="quick-empty">暂无快捷语</div>
+                )}
+              </section>
+              <section className="quick-editor">
+                <textarea
+                  value={quickForm.content}
+                  onChange={(event) => setQuickForm((form) => ({ ...form, content: event.target.value }))}
+                  placeholder="回复内容"
+                  maxLength={1000}
+                  rows={2}
+                />
+                <div>
+                  {quickForm.id ? (
+                    <button type="button" className="quick-secondary" onClick={() => setQuickForm({ id: 0, content: "" })}>取消</button>
+                  ) : null}
+                  <button type="button" className="quick-save" onClick={() => void saveQuickReply()}>
+                    {quickForm.id ? "保存" : "新增"}
+                  </button>
+                </div>
+              </section>
+            </>
+          ) : null}
+        </aside>
+      ) : null}
       {forwardMode ? (
         <div className="modal-mask">
           <section className="forward-modal">
@@ -1582,7 +1941,7 @@ function App() {
             <div className="forward-list">
               {conversations.map((conversation) => (
                 <button key={conversation.id} onClick={() => void forwardTo(conversation.id)}>
-                  <div className={`avatar small ${avatarRoleClass(conversation.peer_phone)}`}>{avatarLabel(conversation.peer_nickname)}</div>
+                  <div className={`avatar small ${avatarRoleClass(conversation.peer_phone)}`} style={avatarStyle(conversation.peer_avatar_url)}>{avatarLabel(conversation.peer_nickname)}</div>
                   <span>{conversation.peer_nickname ?? "会话"}</span>
                 </button>
               ))}
@@ -1671,6 +2030,15 @@ function App() {
                   >
                     {conversation.is_pinned ? "取消置顶" : "置顶"}
                   </button>
+                  {currentUser.phone.startsWith("staff:") && conversation.peer_id !== currentUser.id ? (
+                    <button
+                      onClick={() => {
+                        void remarkConversation(conversation);
+                      }}
+                    >
+                      备注
+                    </button>
+                  ) : null}
                   {conversation.peer_id !== currentUser.id ? (
                     <button
                       onClick={() => {
