@@ -120,6 +120,20 @@ function emitNewMessage(message: ReturnType<typeof createMessage>) {
   io.emit("conversation:changed", { conversationId: message.conversation_id });
 }
 
+function sanitizeFfmpegError(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("ENOENT") || message.includes("not found") || message.includes("not recognized")) {
+    return "服务器视频处理环境未安装";
+  }
+  if (message.includes("Unknown encoder") || message.includes("Error selecting an encoder")) {
+    return "服务器视频编码器不可用";
+  }
+  if (message.includes("Invalid data") || message.includes("moov atom not found")) {
+    return "视频文件格式异常";
+  }
+  return "视频处理失败";
+}
+
 function runFfmpeg(args: string[]) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(ffmpegPath, args, { windowsHide: true });
@@ -129,14 +143,14 @@ function runFfmpeg(args: string[]) {
       if (errorOutput.length > 4000) errorOutput = errorOutput.slice(-4000);
     });
     child.on("error", (error) => {
-      reject(new Error(error.message.includes("ENOENT") ? "服务器未安装 ffmpeg，暂时不能处理视频" : error.message));
+      reject(error);
     });
     child.on("close", (code) => {
       if (code === 0) {
         resolve();
         return;
       }
-      reject(new Error(errorOutput.trim() || "视频转码失败"));
+      reject(new Error(errorOutput.trim() || "视频处理失败"));
     });
   });
 }
@@ -149,20 +163,12 @@ async function transcodeVideoForChat(file: Express.Multer.File) {
   const mp4Path = join(uploadDir, mp4Name);
   const posterPath = join(uploadDir, posterName);
 
-  await runFfmpeg([
+  const commonArgs = [
     "-y",
     "-i",
     sourcePath,
     "-vf",
     "scale='min(720,iw)':-2",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-profile:v",
-    "baseline",
-    "-level",
-    "3.1",
     "-pix_fmt",
     "yuv420p",
     "-movflags",
@@ -173,8 +179,34 @@ async function transcodeVideoForChat(file: Express.Multer.File) {
     "128k",
     "-max_muxing_queue_size",
     "1024",
-    mp4Path,
-  ]);
+  ];
+
+  try {
+    await runFfmpeg([
+      ...commonArgs,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-profile:v",
+      "baseline",
+      "-level",
+      "3.1",
+      mp4Path,
+    ]);
+  } catch (error) {
+    await fs.unlink(mp4Path).catch(() => undefined);
+    const sanitized = sanitizeFfmpegError(error);
+    if (sanitized !== "服务器视频编码器不可用") throw new Error(sanitized);
+    await runFfmpeg([
+      ...commonArgs,
+      "-c:v",
+      "h264",
+      mp4Path,
+    ]).catch((fallbackError) => {
+      throw new Error(sanitizeFfmpegError(fallbackError));
+    });
+  }
 
   await runFfmpeg([
     "-y",
@@ -409,7 +441,8 @@ app.post("/api/admin/staff/:id/avatar", upload.single("file"), (request, respons
     const avatarUrl = `/uploads/${file.filename}`;
     response.json({ staff: updateStaffAvatar(actor.id, staffId, avatarUrl) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "上传失败" });
+    console.error("[staff-avatar-upload]", error);
+    response.status(400).json({ error: "头像上传失败，请稍后重试" });
   }
 });
 
@@ -869,7 +902,14 @@ app.post("/api/conversations/:id/uploads", upload.single("file"), async (request
     emitNewMessage(message);
     response.json({ message });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "上传失败" });
+    if (type === "video") {
+      console.error("[video-upload]", error);
+      await fs.unlink(file.path).catch(() => undefined);
+      response.status(400).json({ error: "视频处理失败，请换个视频或压缩后重试" });
+      return;
+    }
+    console.error("[message-upload]", error);
+    response.status(400).json({ error: "上传失败，请稍后重试" });
   }
 });
 

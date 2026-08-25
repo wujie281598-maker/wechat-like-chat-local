@@ -321,6 +321,15 @@ function formatFileSize(bytes: number) {
   return `${bytes}B`;
 }
 
+function userUploadErrorMessage(error: unknown, fallback = "上传失败，请稍后重试") {
+  const message = error instanceof Error ? error.message : "";
+  if (!message) return fallback;
+  if (/ffmpeg|encoder|libx264|spawn|ENOENT|\/uploads|\\uploads|configuration:|Input #|Output #/i.test(message)) {
+    return "视频处理失败，请换个视频或压缩后重试";
+  }
+  return message.length > 80 ? fallback : message;
+}
+
 function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number | null) => void }) {
   const [loginMode, setLoginMode] = useState<"customer" | "service">("customer");
   const [phone, setPhone] = useState("");
@@ -1755,7 +1764,7 @@ function App() {
       }
       if (uploaded && source === "capture") closeCamera();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "上传失败");
+      setNotice(userUploadErrorMessage(error));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -1798,7 +1807,7 @@ function App() {
       void loadConversations(currentUser.id).catch(handleSessionError);
       closeCamera();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "上传失败");
+      setNotice(userUploadErrorMessage(error));
     } finally {
       setUploading(false);
     }
