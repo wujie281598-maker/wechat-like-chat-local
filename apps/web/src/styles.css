@@ -1879,6 +1879,20 @@ button {
   word-break: break-word;
 }
 
+.record-quote {
+  display: grid;
+  gap: 10px;
+}
+
+.record-quote .quoted-message {
+  max-width: 520px;
+  background: #eef1f3;
+}
+
+.record-quote p {
+  font-size: 17px;
+}
+
 .record-media {
   display: block;
   max-width: min(300px, 100%);

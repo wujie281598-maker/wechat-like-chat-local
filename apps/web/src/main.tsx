@@ -254,13 +254,23 @@ function parseBody<T>(body: string): T | null {
   }
 }
 
+function displayTextBody(body: string) {
+  const quoteBody = parseBody<QuoteBody>(body);
+  if (quoteBody?.quote) return quoteBody.text;
+  const mediaBody = parseBody<MediaBody>(body);
+  if (mediaBody?.url) return mediaBody.mimeType?.startsWith("video/") ? "[视频]" : "[图片]";
+  const bundleBody = parseBody<BundleBody>(body);
+  if (bundleBody?.title) return "[聊天记录]";
+  if (/^\s*[{[]/.test(body)) return "[消息]";
+  return body;
+}
+
 function messagePreview(message: ChatMessage) {
   if (message.revoked_at) return "[撤回了一条消息]";
   if (message.type === "image") return "[图片]";
   if (message.type === "video") return "[视频]";
   if (message.type === "forward_bundle") return "[聊天记录]";
-  const quoteBody = parseBody<QuoteBody>(message.body);
-  return quoteBody?.quote ? quoteBody.text : message.body;
+  return displayTextBody(message.body);
 }
 
 function quotePreviewForMessage(message: ChatMessage) {
@@ -268,8 +278,7 @@ function quotePreviewForMessage(message: ChatMessage) {
   if (message.type === "image") return "[图片]";
   if (message.type === "video") return "[视频]";
   if (message.type === "forward_bundle") return "[聊天记录]";
-  const quoteBody = parseBody<QuoteBody>(message.body);
-  return (quoteBody?.quote ? quoteBody.text : message.body).slice(0, 80);
+  return displayTextBody(message.body).slice(0, 80);
 }
 
 function formatDuration(seconds: number | null) {
@@ -2409,7 +2418,7 @@ function MessageBubble({ message, onMediaLoad }: { message: ChatMessage; onMedia
         <span>{bundle.count} 条消息</span>
         {bundle.items.slice(0, 3).map((item, index) => (
           <p key={`${item.createdAt}-${index}`}>
-            {item.sender}: {item.type === "text" ? item.body : item.type === "image" ? "[图片]" : item.type === "video" ? "[视频]" : "[聊天记录]"}
+            {item.sender}: {item.type === "text" ? displayTextBody(item.body) : item.type === "image" ? "[图片]" : item.type === "video" ? "[视频]" : "[聊天记录]"}
           </p>
         ))}
       </div>
@@ -2429,7 +2438,7 @@ function MessageBubble({ message, onMediaLoad }: { message: ChatMessage; onMedia
     );
   }
 
-  return <p className="bubble">{message.body}</p>;
+  return <p className="bubble">{displayTextBody(message.body)}</p>;
 }
 
 function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: () => void }) {
@@ -2528,18 +2537,25 @@ function RecordContent({ item, onOpenMedia }: { item: BundleBody["items"][number
     );
   }
 
-  return <p>{item.body}</p>;
+  const quoteBody = parseBody<QuoteBody>(item.body);
+  if (quoteBody?.quote) {
+    return (
+      <div className="record-quote">
+        <div className="quoted-message">
+          <strong>{quoteBody.quote.sender}</strong>
+          <span>{quoteBody.quote.preview}</span>
+        </div>
+        <p>{quoteBody.text}</p>
+      </div>
+    );
+  }
+
+  return <p>{displayTextBody(item.body)}</p>;
 }
 
 function formatConversationPreview(conversation: Conversation) {
   if (!conversation.last_message_body) return "暂无消息";
-  if (conversation.last_message_body.startsWith('{"url":')) {
-    return conversation.last_message_body.includes('"mimeType":"video/') ? "[视频]" : "[图片]";
-  }
-  if (conversation.last_message_body.startsWith('{"title":"聊天记录"')) return "[聊天记录]";
-  const quoteBody = parseBody<QuoteBody>(conversation.last_message_body);
-  if (quoteBody?.quote) return quoteBody.text;
-  return conversation.last_message_body;
+  return displayTextBody(conversation.last_message_body);
 }
 
 function EmptyState({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
