@@ -391,10 +391,12 @@ function AdminApp() {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AdminSettings | null>(null);
   const [query, setQuery] = useState("");
+  const [linkQuery, setLinkQuery] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [activeAdminPage, setActiveAdminPage] = useState<AdminPage>("staff");
   const [customerPage, setCustomerPage] = useState(1);
+  const [linkPage, setLinkPage] = useState(1);
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<number[]>([]);
   const [staffForm, setStaffForm] = useState({ username: "", password: "", displayName: "" });
   const [linkForm, setLinkForm] = useState({ title: "", ownerStaffId: "", autoReplyEnabled: true, autoReplyText: "{nickname} 你好抖音评论 0.3元一条有效评论，没有数量限制。24小时都可以发 当天晚上10点前统一结算。" });
@@ -646,6 +648,10 @@ function AdminApp() {
     setSelectedCustomerIds([]);
   }, [query]);
 
+  useEffect(() => {
+    setLinkPage(1);
+  }, [linkQuery]);
+
   if (!token || (!overview && !error)) {
     return (
       <main className="admin-login-shell">
@@ -665,7 +671,17 @@ function AdminApp() {
   const serviceAccounts = overview?.staffAccounts.filter((item) => item.role === "service") ?? [];
   const activeServiceAccounts = serviceAccounts.filter((item) => item.status === "active");
   const filteredUsers = overview?.users.filter((user) => `${user.nickname}${user.phone}${user.status}`.toLowerCase().includes(query.trim().toLowerCase())) ?? [];
+  const normalizedLinkQuery = linkQuery.trim().toLowerCase();
+  const filteredInviteLinks = overview?.inviteLinks.filter((link) => {
+    if (!normalizedLinkQuery) return true;
+    const url = inviteUrl(link.code);
+    return `${link.title}${link.owner_name}${link.code}${url}${link.status}`.toLowerCase().includes(normalizedLinkQuery);
+  }) ?? [];
   const pageSize = 10;
+  const linkPageSize = 10;
+  const totalLinkPages = Math.max(1, Math.ceil(filteredInviteLinks.length / linkPageSize));
+  const safeLinkPage = Math.min(linkPage, totalLinkPages);
+  const pagedInviteLinks = filteredInviteLinks.slice((safeLinkPage - 1) * linkPageSize, safeLinkPage * linkPageSize);
   const totalCustomerPages = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
   const safeCustomerPage = Math.min(customerPage, totalCustomerPages);
   const pagedUsers = filteredUsers.slice((safeCustomerPage - 1) * pageSize, safeCustomerPage * pageSize);
@@ -801,8 +817,17 @@ function AdminApp() {
             <textarea value={linkForm.autoReplyText} onChange={(event) => setLinkForm((form) => ({ ...form, autoReplyText: event.target.value }))} />
             <button className="admin-primary" type="submit">添加链接</button>
           </form>
+          <div className="admin-link-search">
+            <Search size={16} />
+            <input value={linkQuery} onChange={(event) => setLinkQuery(event.target.value)} placeholder="搜索链接名称、客服、邀请码" />
+            {linkQuery ? (
+              <button type="button" onClick={() => setLinkQuery("")} aria-label="清空链接搜索">
+                <X size={15} />
+              </button>
+            ) : null}
+          </div>
           <div className="link-card-grid">
-            {overview?.inviteLinks.map((link) => (
+            {pagedInviteLinks.map((link) => (
               <article className="link-card" key={link.id}>
                 <QrCodeImage value={inviteUrl(link.code)} />
                 <div className="link-card-main">
@@ -820,7 +845,17 @@ function AdminApp() {
                 </div>
               </article>
             ))}
+            {filteredInviteLinks.length === 0 ? (
+              <div className="admin-empty-row">{linkQuery ? "没有找到链接" : "暂无链接"}</div>
+            ) : null}
           </div>
+          {filteredInviteLinks.length > 0 ? (
+            <div className="pagination-bar">
+              <span>共 {filteredInviteLinks.length} 条链接 · 第 {safeLinkPage} / {totalLinkPages} 页</span>
+              <button onClick={() => setLinkPage((page) => Math.max(1, page - 1))} disabled={safeLinkPage <= 1}>上一页</button>
+              <button onClick={() => setLinkPage((page) => Math.min(totalLinkPages, page + 1))} disabled={safeLinkPage >= totalLinkPages}>下一页</button>
+            </div>
+          ) : null}
         </section>
         ) : null}
 
