@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { io, Socket } from "socket.io-client";
 import {
+  Bell,
   Camera,
   Check,
   ChevronDown,
@@ -14,6 +15,7 @@ import {
   MessageSquareText,
   Pin,
   PinOff,
+  Pencil,
   Play,
   RefreshCw,
   Search,
@@ -30,6 +32,7 @@ import {
 import "./styles.css";
 
 const API_URL = window.location.origin;
+const MESSAGE_NOTIFY_DISMISSED_KEY = "doudou-im-message-notify-dismissed";
 function makeClientId(userId: number) {
   const randomUuid = globalThis.crypto?.randomUUID?.();
   if (randomUuid) return `${userId}-${Date.now()}-${randomUuid}`;
@@ -1008,6 +1011,15 @@ function App() {
   const [cameraError, setCameraError] = useState("");
   const [recording, setRecording] = useState(false);
   const [notice, setNotice] = useState("");
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
+    () => {
+      if (!("Notification" in window)) return "unsupported";
+      return Notification.permission;
+    },
+  );
+  const [notificationPromptDismissed, setNotificationPromptDismissed] = useState(
+    () => localStorage.getItem(MESSAGE_NOTIFY_DISMISSED_KEY) === "1",
+  );
   const [uploading, setUploading] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
   const [returnBottomVisible, setReturnBottomVisible] = useState(false);
@@ -1016,6 +1028,7 @@ function App() {
   const [quickPanelCollapsed, setQuickPanelCollapsed] = useState(false);
   const [quickForm, setQuickForm] = useState({ id: 0, content: "" });
   const [draggingQuickId, setDraggingQuickId] = useState<number | null>(null);
+  const [editingRemark, setEditingRemark] = useState<{ conversationId: number; value: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1036,6 +1049,8 @@ function App() {
   const sendButtonRef = useRef<HTMLButtonElement | null>(null);
   const sendButtonCleanupRef = useRef<(() => void) | null>(null);
   const highlightTimerRef = useRef<number | null>(null);
+  const lastNotifiedMessageIdRef = useRef<number | null>(null);
+  const notificationPermissionRef = useRef<NotificationPermission | "unsupported">(notificationPermission);
 
   useEffect(() => {
     const updateAppHeight = () => {
@@ -1066,12 +1081,63 @@ function App() {
   }, [currentUser]);
 
   useEffect(() => {
+    notificationPermissionRef.current = notificationPermission;
+  }, [notificationPermission]);
+
+  useEffect(() => {
     const unreadTotal = conversations.reduce((sum, conversation) => sum + conversation.unread_count, 0);
     document.title = unreadTotal > 0 ? `【您有${unreadTotal}条新消息】` : "抖抖IM";
     return () => {
       document.title = "抖抖IM";
     };
   }, [conversations]);
+
+  async function requestMessageNotifications() {
+    if (!("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      setNotice("当前浏览器不支持消息通知");
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission === "granted") {
+        localStorage.removeItem(MESSAGE_NOTIFY_DISMISSED_KEY);
+        setNotificationPromptDismissed(false);
+        setNotice("消息提醒已开启");
+      } else {
+        localStorage.setItem(MESSAGE_NOTIFY_DISMISSED_KEY, "1");
+        setNotificationPromptDismissed(true);
+        setNotice("未开启提醒，可稍后在浏览器设置里允许通知");
+      }
+    } catch {
+      setNotice("开启提醒失败，请检查浏览器通知权限");
+    }
+  }
+
+  function notifyIncomingMessage(message: ChatMessage) {
+    const user = currentUserRef.current;
+    if (!user || message.sender_id === user.id) return;
+    if (lastNotifiedMessageIdRef.current === message.id) return;
+    lastNotifiedMessageIdRef.current = message.id;
+
+    const sender = message.sender_nickname || "新消息";
+    const body = message.type === "text" ? displayTextBody(message.body) : displayTextBody(message.body);
+    setNotice(`${sender} 发来新消息`);
+    navigator.vibrate?.([80, 40, 80]);
+
+    if (notificationPermissionRef.current !== "granted" || !document.hidden || !("Notification" in window)) return;
+    const notification = new Notification("抖抖IM新消息", {
+      body: `${sender}：${body}`,
+      tag: `doudou-im-${message.conversation_id}`,
+      silent: false,
+    });
+    notification.onclick = () => {
+      window.focus();
+      setPendingConversationId(message.conversation_id);
+      notification.close();
+    };
+  }
 
   useEffect(() => {
     if (!pendingConversationId || !currentUser) return;
@@ -1097,6 +1163,7 @@ function App() {
     setForwardMode(null);
     setForwardTargetIds([]);
     setToolPanelOpen(false);
+    setEditingRemark(null);
     setReturnBottomVisible(false);
     setActiveConversationId(conversationId);
     setMessages([]);
@@ -1164,7 +1231,11 @@ function App() {
       nextSocket.emit("user:online", currentUser.id);
     });
     nextSocket.on("message:new", (message: ChatMessage) => {
-      if (message.conversation_id === activeConversationIdRef.current) {
+      const isCurrentConversation = message.conversation_id === activeConversationIdRef.current;
+      if (!isCurrentConversation) {
+        notifyIncomingMessage(message);
+      }
+      if (isCurrentConversation) {
         upsertMessage(message);
         void markActiveConversationRead(message.conversation_id)
           .then(() => (currentUserRef.current ? loadConversations(currentUserRef.current.id) : undefined))
@@ -1397,16 +1468,15 @@ function App() {
     }
   }
 
-  async function remarkConversation(conversation: Conversation) {
+  async function remarkConversation(conversation: Conversation, remarkName: string) {
     if (!currentUser || !currentUser.phone.startsWith("staff:") || !conversation.peer_id || conversation.peer_id === currentUser.id) return;
-    const nextRemark = window.prompt("备注客户名字", conversation.peer_nickname ?? "");
-    if (nextRemark === null) return;
     try {
       await api<{ ok: true }>(`/api/conversations/${conversation.id}/remark`, {
         method: "POST",
-        body: JSON.stringify({ userId: currentUser.id, remarkName: nextRemark }),
+        body: JSON.stringify({ userId: currentUser.id, remarkName }),
       });
       setConversationMenu(null);
+      setEditingRemark(null);
       await loadUsers(currentUser.id);
       await loadConversations(currentUser.id);
       if (activeConversationId === conversation.id) await loadMessages(conversation.id);
@@ -1787,6 +1857,12 @@ function App() {
     setActionMenu(null);
   }
 
+  function beginRemarkEditing(conversation: Conversation) {
+    if (!currentUser || !currentUser.phone.startsWith("staff:") || !conversation.peer_id || conversation.peer_id === currentUser.id) return;
+    setConversationMenu(null);
+    setEditingRemark({ conversationId: conversation.id, value: conversation.peer_nickname ?? "" });
+  }
+
   function openForwardModal(mode: ForwardMode) {
     setForwardMode(mode);
     setForwardTargetIds([]);
@@ -1918,6 +1994,10 @@ function App() {
   });
   const totalUnread = conversations.reduce((sum, conversation) => sum + conversation.unread_count, 0);
   const isStaffUser = currentUser.phone.startsWith("staff:");
+  const canRemarkActiveConversation =
+    isStaffUser && Boolean(activeConversation?.peer_id) && activeConversation?.peer_id !== currentUser.id;
+  const canPromptNotification =
+    notificationPermission === "default" && !notificationPromptDismissed;
 
   return (
     <main className={`app-shell ${activeConversation ? "chat-open" : ""} ${toolPanelOpen ? "tool-open" : ""} ${quickPanelOpen ? "quick-open" : ""}`}>
@@ -1933,6 +2013,12 @@ function App() {
           <button className="ghost-button" onClick={logout}>
             退出
           </button>
+          {canPromptNotification ? (
+            <button className="notify-button" type="button" onClick={() => void requestMessageNotifications()}>
+              <Bell size={15} />
+              开启提醒
+            </button>
+          ) : null}
         </header>
 
         <div className="search-box">
@@ -2049,6 +2135,7 @@ function App() {
                 className="mobile-back"
                 type="button"
                 onClick={() => {
+                  setEditingRemark(null);
                   setActiveConversationId(null);
                   setMessages([]);
                 }}
@@ -2056,15 +2143,59 @@ function App() {
               >
                 <X size={20} />
               </button>
-              <div>
-                <strong>{activeConversation.peer_nickname ?? "会话"}</strong>
-                <span className={isOnline(activeConversation.peer_last_seen_at) ? "online" : ""}>
-                  {isOnline(activeConversation.peer_last_seen_at) ? "在线" : "离线"}
-                </span>
+              {editingRemark?.conversationId === activeConversation.id ? (
+                <div className="chat-peer-editor">
+                  <input
+                    value={editingRemark.value}
+                    autoFocus
+                    maxLength={40}
+                    placeholder="备注客户名字"
+                    onChange={(event) => setEditingRemark({ conversationId: activeConversation.id, value: event.target.value })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void remarkConversation(activeConversation, editingRemark.value);
+                      }
+                      if (event.key === "Escape") {
+                        setEditingRemark(null);
+                      }
+                    }}
+                  />
+                  <button className="plain-icon" type="button" onClick={() => void remarkConversation(activeConversation, editingRemark.value)} aria-label="保存备注">
+                    <Check size={17} />
+                  </button>
+                  <button className="plain-icon" type="button" onClick={() => setEditingRemark(null)} aria-label="取消备注">
+                    <X size={17} />
+                  </button>
+                </div>
+              ) : canRemarkActiveConversation ? (
+                <button
+                  className="chat-peer-button"
+                  type="button"
+                  onClick={() => beginRemarkEditing(activeConversation)}
+                  title="修改客户备注"
+                >
+                  <span>
+                    <strong>{activeConversation.peer_nickname ?? "会话"}</strong>
+                    <small className={isOnline(activeConversation.peer_last_seen_at) ? "online" : ""}>
+                      {isOnline(activeConversation.peer_last_seen_at) ? "在线" : "离线"}
+                    </small>
+                  </span>
+                  <Pencil size={15} />
+                </button>
+              ) : (
+                <div className="chat-peer-info">
+                  <strong>{activeConversation.peer_nickname ?? "会话"}</strong>
+                  <span className={isOnline(activeConversation.peer_last_seen_at) ? "online" : ""}>
+                    {isOnline(activeConversation.peer_last_seen_at) ? "在线" : "离线"}
+                  </span>
+                </div>
+              )}
+              <div className="chat-header-actions">
+                <button className="icon-button" onClick={() => void togglePin(activeConversation)} aria-label={activeConversation.is_pinned ? "取消置顶" : "置顶"}>
+                  {activeConversation.is_pinned ? <PinOff size={18} /> : <Pin size={18} />}
+                </button>
               </div>
-              <button className="icon-button" onClick={() => void togglePin(activeConversation)} aria-label={activeConversation.is_pinned ? "取消置顶" : "置顶"}>
-                {activeConversation.is_pinned ? <PinOff size={18} /> : <Pin size={18} />}
-              </button>
             </header>
             {selectedMessageIds.length > 0 ? (
               <div className="selection-bar">
@@ -2500,7 +2631,7 @@ function App() {
                   {currentUser.phone.startsWith("staff:") && conversation.peer_id !== currentUser.id ? (
                     <button
                       onClick={() => {
-                        void remarkConversation(conversation);
+                        beginRemarkEditing(conversation);
                       }}
                     >
                       备注

@@ -779,7 +779,7 @@ button {
 .profile-bar {
   height: 72px;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 44px minmax(0, 1fr) auto auto;
   gap: 12px;
   align-items: center;
   padding: 12px;
@@ -788,7 +788,8 @@ button {
 
 .profile-bar strong,
 .row-title strong,
-.chat-header strong {
+.chat-header strong,
+.chat-peer-button small {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -860,6 +861,24 @@ button {
   border-radius: 6px;
   color: var(--muted);
   padding: 0 10px;
+}
+
+.notify-button {
+  height: 32px;
+  border: 1px solid rgba(7, 193, 96, 0.22);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(7, 193, 96, 0.08);
+  color: var(--green-dark);
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.notify-button:hover {
+  border-color: rgba(7, 193, 96, 0.36);
+  background: rgba(7, 193, 96, 0.13);
 }
 
 .search-box {
@@ -1056,9 +1075,85 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 0 20px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+}
+
+.chat-peer-info,
+.chat-peer-button {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chat-peer-button {
+  height: 52px;
+  border: 0;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  color: var(--text);
+  background: transparent;
+  padding: 0 10px;
+  text-align: left;
+}
+
+.chat-peer-button:hover {
+  background: rgba(21, 25, 28, 0.04);
+}
+
+.chat-peer-button span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.chat-peer-button small {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chat-peer-button svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.chat-peer-editor {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 260px) 32px 32px;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-peer-editor input {
+  width: 100%;
+  height: 36px;
+  border: 1px solid var(--green);
+  border-radius: 6px;
+  background: white;
+  color: var(--text);
+  padding: 0 10px;
+  outline: none;
+}
+
+.chat-peer-editor .plain-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: white;
+}
+
+.chat-peer-editor .plain-icon:first-of-type {
+  color: var(--green);
+}
+
+.chat-peer-editor .plain-icon:hover {
+  background: var(--soft);
 }
 
 .chat-header-actions {
@@ -2570,8 +2665,15 @@ html.force-mobile-layout {
   }
 
   .profile-bar {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
     min-height: 82px;
     padding: 12px 14px;
+  }
+
+  .notify-button {
+    grid-column: 2 / 4;
+    width: 100%;
+    justify-content: center;
   }
 
   .search-box {
