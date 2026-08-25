@@ -2113,6 +2113,13 @@ function App() {
     }
   }
 
+  function closeMediaViewer() {
+    setMediaViewerError("");
+    setMediaViewerLoading(false);
+    setMediaViewerUrl("");
+    setViewingMedia(null);
+  }
+
   async function writeClipboardText(text: string) {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
@@ -2832,20 +2839,29 @@ function App() {
       {viewingMedia ? (
         <div
           className="media-viewer"
-          onClick={() => {
-            setMediaViewerError("");
-            setMediaViewerLoading(false);
-            setMediaViewerUrl("");
-            setViewingMedia(null);
-          }}
+          onPointerDownCapture={(event) => event.stopPropagation()}
+          onTouchStartCapture={(event) => event.stopPropagation()}
+          onClick={closeMediaViewer}
         >
           <button
             className="media-viewer-close"
-            onClick={() => {
-              setMediaViewerError("");
-              setMediaViewerLoading(false);
-              setMediaViewerUrl("");
-              setViewingMedia(null);
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onTouchStart={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onTouchEnd={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              closeMediaViewer();
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              closeMediaViewer();
             }}
             aria-label="关闭图片视频预览"
           >
@@ -3135,79 +3151,28 @@ function MessageBubble({
 }
 
 function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: () => void }) {
-  const [duration, setDuration] = useState<number | null>(null);
   const serverPoster = media.posterUrl ? `${API_URL}${media.posterUrl}` : "";
   const [poster, setPoster] = useState(serverPoster);
-  const [videoUrl, setVideoUrl] = useState(media.url);
   const [orientation, setOrientation] = useState<"portrait" | "landscape">("portrait");
-  const posterPendingRef = useRef(false);
 
   useEffect(() => {
     setPoster(serverPoster);
-    setVideoUrl(media.url);
-  }, [media.url, serverPoster]);
+    onMediaLoad?.();
+  }, [serverPoster, onMediaLoad]);
 
-  function capturePoster(video: HTMLVideoElement) {
-    if (poster || serverPoster || !video.videoWidth || !video.videoHeight) return;
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const context = canvas.getContext("2d");
-      if (!context) return;
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      setPoster(canvas.toDataURL("image/jpeg", 0.72));
-      posterPendingRef.current = false;
-    } catch {
-      // Some mobile browsers block canvas extraction for media; the video element still shows its first frame.
-      posterPendingRef.current = false;
-    }
+  function updatePosterSize(event: React.SyntheticEvent<HTMLImageElement>) {
+    const image = event.currentTarget;
+    setOrientation(image.naturalHeight > image.naturalWidth ? "portrait" : "landscape");
+    onMediaLoad?.();
   }
 
   return (
     <div className={`bubble media-bubble video-bubble ${orientation} ${poster ? "has-poster" : ""}`}>
-      <video
-        key={videoUrl}
-        src={`${API_URL}${videoUrl}`}
-        poster={poster || undefined}
-        preload="metadata"
-        muted
-        playsInline
-        crossOrigin="anonymous"
-        onLoadedMetadata={(event) => {
-          const video = event.currentTarget;
-          setDuration(video.duration);
-          setOrientation(video.videoHeight > video.videoWidth ? "portrait" : "landscape");
-          if (!serverPoster) {
-            posterPendingRef.current = true;
-            try {
-              video.currentTime = Math.min(0.1, Math.max(0, (video.duration || 1) - 0.05));
-            } catch {
-              capturePoster(video);
-            }
-          }
-          onMediaLoad?.();
-        }}
-        onLoadedData={(event) => {
-          if (!posterPendingRef.current) capturePoster(event.currentTarget);
-          onMediaLoad?.();
-        }}
-        onSeeked={(event) => {
-          capturePoster(event.currentTarget);
-          onMediaLoad?.();
-        }}
-        onError={() => {
-          if (media.originalUrl && media.originalUrl !== videoUrl) {
-            setVideoUrl(media.originalUrl);
-          }
-          onMediaLoad?.();
-        }}
-      />
+      {poster ? <img src={poster} alt={media.name} onLoad={updatePosterSize} onError={() => setPoster("")} /> : null}
       {!poster ? <strong>视频</strong> : null}
       <span className="video-play">
         <Play size={26} fill="currentColor" />
       </span>
-      {duration ? <em>{formatDuration(duration)}</em> : null}
     </div>
   );
 }
@@ -3236,7 +3201,7 @@ function RecordContent({
     if (!media) return <p>[视频]</p>;
     return (
       <button className="record-media-button" type="button" onClick={() => onOpenMedia?.(media)} aria-label="打开视频">
-        <video className="record-media" src={`${API_URL}${media.url}`} muted playsInline preload="metadata" />
+        {media.posterUrl ? <img className="record-media" src={`${API_URL}${media.posterUrl}`} alt={media.name} /> : <span className="record-video-placeholder">视频</span>}
         <span className="record-video-play">
           <Play size={22} fill="currentColor" />
         </span>
