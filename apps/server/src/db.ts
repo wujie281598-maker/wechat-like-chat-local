@@ -1184,6 +1184,14 @@ export function getConversationMemberIds(conversationId: number): number[] {
   return rows.map((row) => row.user_id);
 }
 
+export function markConversationRead(conversationId: number, userId: number) {
+  assertActiveUser(userId);
+  const result = db
+    .prepare("UPDATE conversation_members SET unread_count = 0 WHERE conversation_id = ? AND user_id = ?")
+    .run(conversationId, userId);
+  if (result.changes === 0) throw new Error("NOT_CONVERSATION_MEMBER");
+}
+
 export function createMessage(input: NewMessageInput): MessageRow {
   assertActiveUser(input.senderId);
   const create = db.transaction(() => {

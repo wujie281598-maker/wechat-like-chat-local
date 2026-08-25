@@ -30,6 +30,7 @@ import {
   getInviteLinkByCode,
   getMessagesByIds,
   getMessages,
+  markConversationRead,
   getOrCreateDirectConversation,
   getOrCreateUser,
   getOrCreateUserWithNickname,
@@ -568,6 +569,22 @@ app.get("/api/conversations/:id/messages", (request, response) => {
 
   try {
     response.json({ messages: getMessages(conversationId, userId) });
+  } catch (error) {
+    response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
+  }
+});
+
+app.patch("/api/conversations/:id/read", (request, response) => {
+  const conversationId = Number(request.params.id);
+  const parsed = z.object({ userId: z.number() }).safeParse(request.body);
+  if (!conversationId || !parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+
+  try {
+    markConversationRead(conversationId, parsed.data.userId);
+    response.json({ ok: true });
   } catch (error) {
     response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
   }

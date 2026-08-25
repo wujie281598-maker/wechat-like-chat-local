@@ -3,6 +3,7 @@
   --sidebar-width: 336px;
   --composer-height: 78px;
   --tool-panel-height: 220px;
+  --app-height: 100dvh;
   --bg: #e9edf0;
   --panel: #f7f7f7;
   --panel-strong: #ffffff;
@@ -643,8 +644,8 @@ button {
 
 .app-shell {
   width: min(1180px, 100vw);
-  height: 100dvh;
-  max-height: 100dvh;
+  height: var(--app-height);
+  max-height: var(--app-height);
   min-height: 0;
   margin: 0 auto;
   display: grid;
@@ -2233,8 +2234,8 @@ button {
     position: fixed;
     inset: 0;
     width: 100vw;
-    height: 100svh;
-    max-height: 100svh;
+    height: var(--app-height);
+    max-height: var(--app-height);
     min-height: 0;
     grid-template-columns: 1fr;
     border: 0;

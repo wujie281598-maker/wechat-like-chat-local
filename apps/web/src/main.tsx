@@ -941,6 +941,22 @@ function App() {
   const sendButtonCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
+    const updateAppHeight = () => {
+      const height = window.visualViewport?.height ?? window.innerHeight;
+      document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+    };
+    updateAppHeight();
+    window.addEventListener("resize", updateAppHeight);
+    window.visualViewport?.addEventListener("resize", updateAppHeight);
+    window.visualViewport?.addEventListener("scroll", updateAppHeight);
+    return () => {
+      window.removeEventListener("resize", updateAppHeight);
+      window.visualViewport?.removeEventListener("resize", updateAppHeight);
+      window.visualViewport?.removeEventListener("scroll", updateAppHeight);
+    };
+  }, []);
+
+  useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
     window.scrollTo(0, 0);
   }, [activeConversationId]);
@@ -986,6 +1002,30 @@ function App() {
     void loadMessages(conversationId, { showSwitching: true }).catch(handleSessionError);
   }
 
+  function upsertMessage(message: ChatMessage) {
+    setMessages((current) => {
+      const existingIndex = current.findIndex(
+        (item) => item.id === message.id || (message.client_id && item.client_id === message.client_id),
+      );
+      if (existingIndex >= 0) {
+        const next = [...current];
+        next[existingIndex] = message;
+        return next;
+      }
+      return [...current, message];
+    });
+    window.setTimeout(() => scrollToBottom("smooth"), 0);
+  }
+
+  async function markActiveConversationRead(conversationId: number) {
+    const user = currentUserRef.current;
+    if (!user) return;
+    await api<{ ok: true }>(`/api/conversations/${conversationId}/read`, {
+      method: "PATCH",
+      body: JSON.stringify({ userId: user.id }),
+    });
+  }
+
   function forceLogout(message: string) {
     if (sessionBlockedRef.current) return;
     sessionBlockedRef.current = true;
@@ -1012,7 +1052,10 @@ function App() {
     });
     nextSocket.on("message:new", (message: ChatMessage) => {
       if (message.conversation_id === activeConversationIdRef.current) {
-        void loadMessages(message.conversation_id).catch(handleSessionError);
+        upsertMessage(message);
+        void markActiveConversationRead(message.conversation_id)
+          .then(() => (currentUserRef.current ? loadConversations(currentUserRef.current.id) : undefined))
+          .catch(handleSessionError);
       } else {
         void loadConversations(currentUser.id).catch(handleSessionError);
       }
@@ -1025,7 +1068,7 @@ function App() {
     });
     nextSocket.on("conversation:changed", ({ conversationId }: { conversationId: number }) => {
       if (conversationId === activeConversationIdRef.current) {
-        void loadMessages(conversationId).catch(handleSessionError);
+        void loadConversations(currentUser.id).catch(handleSessionError);
         return;
       }
       void loadConversations(currentUser.id).catch(handleSessionError);
@@ -1149,7 +1192,7 @@ function App() {
     setQuoteTarget(null);
     sendingRef.current = true;
     try {
-      await api<{ message: ChatMessage }>(`/api/conversations/${activeConversationIdValue}/messages`, {
+      const result = await api<{ message: ChatMessage }>(`/api/conversations/${activeConversationIdValue}/messages`, {
         method: "POST",
         body: JSON.stringify({
           userId: currentUserValue.id,
@@ -1157,6 +1200,8 @@ function App() {
           clientId: makeClientId(currentUserValue.id),
         }),
       });
+      upsertMessage(result.message);
+      void loadConversations(currentUserValue.id).catch(handleSessionError);
       scrollToBottom("smooth");
     } catch (error) {
       setNotice(error instanceof Error ? `发送失败：${error.message}` : "发送失败");
@@ -1291,13 +1336,14 @@ function App() {
           method: "POST",
           body: formData,
         });
-        const data = await response.json();
+        const data = (await response.json()) as { message?: ChatMessage; error?: string };
         if (!response.ok) throw new Error(data.error ?? "上传失败");
+        if (data.message) upsertMessage(data.message);
         uploaded = true;
       }
       if (uploaded) {
         setNotice("已发送");
-        await loadMessages(conversationId);
+        void loadConversations(currentUser.id).catch(handleSessionError);
         scrollToBottom("smooth");
       }
       if (uploaded && source === "capture") closeCamera();
@@ -1335,9 +1381,10 @@ function App() {
         method: "POST",
         body: formData,
       });
-      const data = await response.json();
+      const data = (await response.json()) as { message?: ChatMessage; error?: string };
       if (!response.ok) throw new Error(data.error ?? "上传失败");
-      await loadMessages(conversationId);
+      if (data.message) upsertMessage(data.message);
+      void loadConversations(currentUser.id).catch(handleSessionError);
       closeCamera();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "上传失败");
