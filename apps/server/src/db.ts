@@ -102,6 +102,15 @@ db.exec(`
     FOREIGN KEY (created_by) REFERENCES staff_accounts(id)
   );
 
+  CREATE TABLE IF NOT EXISTS invite_link_visits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invite_link_id INTEGER NOT NULL,
+    user_id INTEGER,
+    visited_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (invite_link_id) REFERENCES invite_links(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
   CREATE TABLE IF NOT EXISTS customer_assignments (
     user_id INTEGER PRIMARY KEY,
     staff_id INTEGER NOT NULL,
@@ -158,6 +167,7 @@ const inviteColumnNames = new Set(inviteColumns.map((column) => column.name));
 if (!inviteColumnNames.has("deleted_at")) {
   db.prepare("ALTER TABLE invite_links ADD COLUMN deleted_at TEXT").run();
 }
+db.prepare("CREATE INDEX IF NOT EXISTS idx_invite_link_visits_link_time ON invite_link_visits(invite_link_id, visited_at)").run();
 
 const assignmentColumns = db.prepare("PRAGMA table_info(customer_assignments)").all() as Array<{ name: string }>;
 const assignmentColumnNames = new Set(assignmentColumns.map((column) => column.name));
@@ -253,6 +263,7 @@ export type InviteLinkRow = {
   auto_reply_text: string;
   status: string;
   visits: number;
+  today_visits: number;
   customers: number;
   deleted_at: string | null;
   created_by: number;
@@ -759,9 +770,19 @@ export function changeStaffPassword(staffId: number, currentPassword: string, ne
 export function getVisibleInviteLinks(staffId: number): InviteLinkRow[] {
   const staff = assertStaffAccess(staffId);
   let sql = `
-    SELECT invite_links.*, owner.display_name AS owner_name, owner.role AS owner_role
+    SELECT
+      invite_links.*,
+      COALESCE(today_visits.value, 0) AS today_visits,
+      owner.display_name AS owner_name,
+      owner.role AS owner_role
     FROM invite_links
     LEFT JOIN staff_accounts owner ON owner.id = invite_links.owner_staff_id
+    LEFT JOIN (
+      SELECT invite_link_id, COUNT(*) AS value
+      FROM invite_link_visits
+      WHERE DATE(visited_at, 'localtime') = DATE('now', 'localtime')
+      GROUP BY invite_link_id
+    ) today_visits ON today_visits.invite_link_id = invite_links.id
   `;
   const params: number[] = [];
   sql += " WHERE invite_links.deleted_at IS NULL";
@@ -777,9 +798,19 @@ export function getInviteLinkByCode(code: string): InviteLinkRow | null {
   return (
     (db
       .prepare(`
-        SELECT invite_links.*, owner.display_name AS owner_name, owner.role AS owner_role
+        SELECT
+          invite_links.*,
+          COALESCE(today_visits.value, 0) AS today_visits,
+          owner.display_name AS owner_name,
+          owner.role AS owner_role
         FROM invite_links
         JOIN staff_accounts owner ON owner.id = invite_links.owner_staff_id
+        LEFT JOIN (
+          SELECT invite_link_id, COUNT(*) AS value
+          FROM invite_link_visits
+          WHERE DATE(visited_at, 'localtime') = DATE('now', 'localtime')
+          GROUP BY invite_link_id
+        ) today_visits ON today_visits.invite_link_id = invite_links.id
         WHERE invite_links.code = ?
           AND invite_links.deleted_at IS NULL
     `)
@@ -838,6 +869,7 @@ export function assignCustomerToInvite(userId: number, inviteCode: string | null
   if (!owner || owner.status !== "active" || !owner.chat_user_id) return null;
 
   db.prepare("UPDATE invite_links SET visits = visits + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(invite.id);
+  db.prepare("INSERT INTO invite_link_visits (invite_link_id, user_id) VALUES (?, ?)").run(invite.id, userId);
   const existing = db
     .prepare(`
       SELECT

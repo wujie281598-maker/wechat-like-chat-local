@@ -175,6 +175,7 @@ type InviteLink = {
   auto_reply_text: string;
   status: string;
   visits: number;
+  today_visits: number;
   customers: number;
   created_by: number;
   created_at: string;
@@ -754,7 +755,7 @@ function AdminApp() {
                 <div className="link-card-main">
                   <header><strong>{link.title}</strong><span className={link.status === "active" ? "status-active" : "status-disabled"}>{link.status === "active" ? "启用" : "停用"}</span></header>
                   <p>客服：{link.owner_name}</p>
-                  <p>访问 {link.visits} · 客户 {link.customers}</p>
+                  <p>访问 {link.visits} · 今日访问 {link.today_visits} · 客户 {link.customers}</p>
                   <div className="admin-url">{inviteUrl(link.code)}</div>
                   <div className="row-actions">
                     <button onClick={() => void toggleLinkStatus(link)}>{link.status === "active" ? "停用" : "启用"}</button>
