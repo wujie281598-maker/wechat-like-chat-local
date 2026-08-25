@@ -134,6 +134,24 @@ function sanitizeFfmpegError(error: unknown) {
   return "视频处理失败";
 }
 
+function getUploadExtension(file: Express.Multer.File) {
+  return extname(file.originalname || file.filename).toLowerCase();
+}
+
+function isVideoUpload(file: Express.Multer.File) {
+  const extension = getUploadExtension(file);
+  return file.mimetype.startsWith("video/") || [".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"].includes(extension);
+}
+
+function getVideoMimeType(file: Express.Multer.File) {
+  if (file.mimetype.startsWith("video/")) return file.mimetype;
+  const extension = getUploadExtension(file);
+  if (extension === ".mp4" || extension === ".m4v") return "video/mp4";
+  if (extension === ".mov") return "video/quicktime";
+  if (extension === ".webm") return "video/webm";
+  return "video/mp4";
+}
+
 function runFfmpeg(args: string[]) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(ffmpegPath, args, { windowsHide: true });
@@ -242,10 +260,13 @@ async function transcodeVideoForChat(file: Express.Multer.File) {
   }
 
   return {
-    mp4Path: finalMp4Path,
-    mp4Name: finalMp4Name,
-    posterPath: posterOk ? posterPath : null,
-    posterName: posterOk ? posterName : null,
+    url: `/uploads/${finalMp4Name}`,
+    originalUrl: `/uploads/${file.filename}`,
+    originalMimeType: getVideoMimeType(file),
+    posterUrl: posterOk ? `/uploads/${posterName}` : null,
+    size: (await fs.stat(finalMp4Path)).size,
+    originalSize: file.size,
+    transcoded: transcodeOk,
   };
 }
 
@@ -886,25 +907,43 @@ app.post("/api/conversations/:id/uploads", upload.single("file"), async (request
     return;
   }
 
-  const type = file.mimetype.startsWith("video/") ? "video" : "image";
+  const type = isVideoUpload(file) ? "video" : "image";
+  const originalMimeType = type === "video" ? getVideoMimeType(file) : file.mimetype;
 
   try {
     const media =
       type === "video"
-        ? await transcodeVideoForChat(file)
+        ? await transcodeVideoForChat(file).catch((error) => {
+            console.error("[video-transcode-fallback]", error);
+            return {
+              url: `/uploads/${file.filename}`,
+              originalUrl: `/uploads/${file.filename}`,
+              originalMimeType,
+              posterUrl: null,
+              size: file.size,
+              originalSize: file.size,
+              transcoded: false,
+            };
+          })
         : {
             url: `/uploads/${file.filename}`,
+            originalUrl: null,
+            originalMimeType: null,
             posterUrl: null,
             size: file.size,
+            originalSize: file.size,
+            transcoded: false,
           };
     const body = JSON.stringify({
       url: media.url,
+      originalUrl: media.originalUrl,
+      originalMimeType: media.originalMimeType,
       posterUrl: media.posterUrl,
       name: type === "video" ? `${basename(file.originalname, extname(file.originalname))}.mp4` : file.originalname,
       size: media.size,
-      originalSize: file.size,
-      mimeType: type === "video" ? "video/mp4" : file.mimetype,
-      transcoded: type === "video",
+      originalSize: media.originalSize,
+      mimeType: type === "video" && media.transcoded ? "video/mp4" : originalMimeType,
+      transcoded: media.transcoded,
     });
     const message = createMessage({
       conversationId,

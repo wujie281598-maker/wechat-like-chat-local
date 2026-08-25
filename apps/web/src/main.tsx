@@ -125,6 +125,8 @@ type CapturedMedia = {
 
 type MediaBody = {
   url: string;
+  originalUrl?: string | null;
+  originalMimeType?: string | null;
   posterUrl?: string | null;
   name: string;
   size: number;
@@ -1039,6 +1041,7 @@ function App() {
   const [forwardSending, setForwardSending] = useState(false);
   const [viewingBundle, setViewingBundle] = useState<BundleBody | null>(null);
   const [viewingMedia, setViewingMedia] = useState<MediaBody | null>(null);
+  const [mediaViewerUrl, setMediaViewerUrl] = useState("");
   const [mediaViewerError, setMediaViewerError] = useState("");
   const [mediaViewerLoading, setMediaViewerLoading] = useState(false);
   const [actionMenu, setActionMenu] = useState<{ messageId: number; x: number; y: number } | null>(null);
@@ -2092,7 +2095,8 @@ function App() {
 
   async function saveMedia(media: MediaBody) {
     try {
-      const response = await fetch(`${API_URL}${media.url}`);
+      const sourceUrl = mediaViewerUrl || media.url;
+      const response = await fetch(`${API_URL}${sourceUrl}`);
       if (!response.ok) throw new Error("下载失败");
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
@@ -2541,6 +2545,7 @@ function App() {
                             if (media) {
                               setMediaViewerError("");
                               setMediaViewerLoading(message.type === "video");
+                              setMediaViewerUrl(media.url);
                               setViewingMedia(media);
                             }
                           }
@@ -2810,6 +2815,7 @@ function App() {
                     onOpenMedia={(media) => {
                       setMediaViewerError("");
                       setMediaViewerLoading(media.mimeType.startsWith("video/"));
+                      setMediaViewerUrl(media.url);
                       setViewingMedia(media);
                     }}
                     onJumpToMessage={(messageId) => {
@@ -2829,6 +2835,7 @@ function App() {
           onClick={() => {
             setMediaViewerError("");
             setMediaViewerLoading(false);
+            setMediaViewerUrl("");
             setViewingMedia(null);
           }}
         >
@@ -2837,6 +2844,7 @@ function App() {
             onClick={() => {
               setMediaViewerError("");
               setMediaViewerLoading(false);
+              setMediaViewerUrl("");
               setViewingMedia(null);
             }}
             aria-label="关闭图片视频预览"
@@ -2857,7 +2865,8 @@ function App() {
           {viewingMedia.mimeType.startsWith("video/") ? (
             <>
               <video
-                src={`${API_URL}${viewingMedia.url}`}
+                key={mediaViewerUrl || viewingMedia.url}
+                src={`${API_URL}${mediaViewerUrl || viewingMedia.url}`}
                 controls
                 autoPlay
                 playsInline
@@ -2876,6 +2885,13 @@ function App() {
                 }}
                 onWaiting={() => setMediaViewerLoading(true)}
                 onError={() => {
+                  if (viewingMedia.originalUrl && viewingMedia.originalUrl !== (mediaViewerUrl || viewingMedia.url)) {
+                    setMediaViewerUrl(viewingMedia.originalUrl);
+                    setMediaViewerLoading(true);
+                    setMediaViewerError("");
+                    setNotice("正在尝试原视频播放...");
+                    return;
+                  }
                   setMediaViewerLoading(false);
                   setMediaViewerError("视频加载失败，可先保存到手机相册查看");
                 }}
@@ -3122,12 +3138,14 @@ function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: (
   const [duration, setDuration] = useState<number | null>(null);
   const serverPoster = media.posterUrl ? `${API_URL}${media.posterUrl}` : "";
   const [poster, setPoster] = useState(serverPoster);
+  const [videoUrl, setVideoUrl] = useState(media.url);
   const [orientation, setOrientation] = useState<"portrait" | "landscape">("portrait");
   const posterPendingRef = useRef(false);
 
   useEffect(() => {
     setPoster(serverPoster);
-  }, [serverPoster]);
+    setVideoUrl(media.url);
+  }, [media.url, serverPoster]);
 
   function capturePoster(video: HTMLVideoElement) {
     if (poster || serverPoster || !video.videoWidth || !video.videoHeight) return;
@@ -3149,7 +3167,8 @@ function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: (
   return (
     <div className={`bubble media-bubble video-bubble ${orientation} ${poster ? "has-poster" : ""}`}>
       <video
-        src={`${API_URL}${media.url}`}
+        key={videoUrl}
+        src={`${API_URL}${videoUrl}`}
         poster={poster || undefined}
         preload="metadata"
         muted
@@ -3175,6 +3194,12 @@ function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: (
         }}
         onSeeked={(event) => {
           capturePoster(event.currentTarget);
+          onMediaLoad?.();
+        }}
+        onError={() => {
+          if (media.originalUrl && media.originalUrl !== videoUrl) {
+            setVideoUrl(media.originalUrl);
+          }
           onMediaLoad?.();
         }}
       />
