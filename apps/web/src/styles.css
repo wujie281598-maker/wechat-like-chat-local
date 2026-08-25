@@ -1041,6 +1041,35 @@ button {
   overflow: hidden;
 }
 
+.return-bottom-button {
+  position: absolute;
+  right: 50%;
+  bottom: calc(var(--composer-height) + 16px);
+  z-index: 8;
+  height: 38px;
+  border: 1px solid rgba(216, 221, 225, 0.92);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 13px 0 11px;
+  color: #53606a;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 20px rgba(13, 28, 42, 0.12);
+  transform: translateX(50%);
+}
+
+.return-bottom-button:hover {
+  border-color: rgba(7, 193, 96, 0.35);
+  color: var(--green);
+  background: white;
+}
+
+.return-bottom-button span {
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .chat-loading,
 .upload-loading {
   position: sticky;
@@ -1199,6 +1228,16 @@ button {
   background: rgba(0, 0, 0, 0.055);
 }
 
+.quote-jump {
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.quote-jump:hover {
+  border-left-color: rgba(87, 107, 149, 0.58);
+  background: rgba(87, 107, 149, 0.1);
+}
+
 .quoted-message strong {
   color: #53606a;
   font-size: 12px;
@@ -1225,6 +1264,22 @@ button {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
   user-select: text;
+}
+
+.message-row.is-highlighted .bubble,
+.recalled-row.is-highlighted {
+  animation: message-highlight 1.8s ease;
+}
+
+@keyframes message-highlight {
+  0%,
+  100% {
+    box-shadow: none;
+  }
+  18%,
+  68% {
+    box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.22), 0 8px 22px rgba(7, 193, 96, 0.2);
+  }
 }
 
 .tool-button *,
@@ -1889,6 +1944,15 @@ button {
   background: #eef1f3;
 }
 
+.record-quote-jump {
+  width: 100%;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  color: inherit;
+  text-align: left;
+}
+
 .record-quote p {
   font-size: 17px;
 }
@@ -2312,6 +2376,12 @@ button {
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
+  }
+
+  .return-bottom-button {
+    bottom: calc(var(--composer-height) + 12px);
+    height: 36px;
+    padding: 0 12px 0 10px;
   }
 
   .bubble-button,

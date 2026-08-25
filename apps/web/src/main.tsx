@@ -4,6 +4,7 @@ import { io, Socket } from "socket.io-client";
 import {
   Camera,
   Check,
+  ChevronDown,
   Download,
   File as FileIcon,
   FileStack,
@@ -924,6 +925,8 @@ function App() {
   const [recording, setRecording] = useState(false);
   const [notice, setNotice] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
+  const [returnBottomVisible, setReturnBottomVisible] = useState(false);
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
   const [quickPanelOpen, setQuickPanelOpen] = useState(false);
   const [quickPanelCollapsed, setQuickPanelCollapsed] = useState(false);
@@ -948,6 +951,7 @@ function App() {
   const sessionBlockedRef = useRef(false);
   const sendButtonRef = useRef<HTMLButtonElement | null>(null);
   const sendButtonCleanupRef = useRef<(() => void) | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const updateAppHeight = () => {
@@ -1005,6 +1009,7 @@ function App() {
     setSelectedMessageIds([]);
     setForwardMode(null);
     setToolPanelOpen(false);
+    setReturnBottomVisible(false);
     setActiveConversationId(conversationId);
     setMessages([]);
     setMessagesLoading(true);
@@ -1102,6 +1107,7 @@ function App() {
   }, [socket, activeConversationId]);
 
   function scrollToBottom(behavior: ScrollBehavior = "auto") {
+    setReturnBottomVisible(false);
     window.requestAnimationFrame(() => {
       const list = messageListRef.current;
       if (list) {
@@ -1110,6 +1116,26 @@ function App() {
       }
       bottomRef.current?.scrollIntoView({ behavior, block: "end" });
     });
+  }
+
+  function jumpToMessage(messageId: number) {
+    const target = messageListRef.current?.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
+    if (!target) {
+      setNotice("引用的消息不在当前聊天记录中");
+      return;
+    }
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    setReturnBottomVisible(true);
+    setHighlightedMessageId(messageId);
+    if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 1800);
+  }
+
+  function handleMessageListScroll() {
+    const list = messageListRef.current;
+    if (!list || !returnBottomVisible) return;
+    const distanceToBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+    if (distanceToBottom < 80) setReturnBottomVisible(false);
   }
 
   useEffect(() => {
@@ -1122,6 +1148,7 @@ function App() {
     return () => {
       stopCamera();
       if (capturedMedia) URL.revokeObjectURL(capturedMedia.url);
+      if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
     };
   }, []);
 
@@ -1919,7 +1946,7 @@ function App() {
                 </button>
               </div>
             ) : null}
-            <div className={`message-list ${messagesLoading ? "is-switching" : ""}`} ref={messageListRef}>
+            <div className={`message-list ${messagesLoading ? "is-switching" : ""}`} ref={messageListRef} onScroll={handleMessageListScroll}>
               {messagesLoading ? (
                 <div className="chat-loading">
                   <span />
@@ -1947,14 +1974,22 @@ function App() {
                 if (message.revoked_at) {
                   const canReEdit = mine && Boolean(editableRecalls[message.id]);
                   return (
-                    <div key={message.id} className="recalled-row">
+                    <div
+                      key={message.id}
+                      className={`recalled-row ${highlightedMessageId === message.id ? "is-highlighted" : ""}`}
+                      data-message-id={message.id}
+                    >
                       <span>{mine ? "你撤回了一条消息" : `${message.sender_nickname}撤回了一条消息`}</span>
                       {canReEdit ? <button onClick={() => reEditMessage(message.id)}>重新编辑</button> : null}
                     </div>
                   );
                 }
                 return (
-                  <div key={message.id} className={`message-row ${mine ? "mine" : ""} ${selectedMessageIds.length > 0 ? "selecting" : ""}`}>
+                  <div
+                    key={message.id}
+                    className={`message-row ${mine ? "mine" : ""} ${selectedMessageIds.length > 0 ? "selecting" : ""} ${highlightedMessageId === message.id ? "is-highlighted" : ""}`}
+                    data-message-id={message.id}
+                  >
                     {selectedMessageIds.length > 0 ? (
                       <button
                         className={`select-dot ${selected ? "selected" : ""}`}
@@ -1973,7 +2008,13 @@ function App() {
                       <span>{formatTime(message.created_at)}</span>
                       <button
                         className="bubble-button"
-                        onClick={() => {
+                        onClick={(event) => {
+                          const clickTarget = event.target instanceof Element ? event.target : null;
+                          const quoteJump = clickTarget?.closest<HTMLElement>("[data-quote-message-id]");
+                          if (quoteJump?.dataset.quoteMessageId) {
+                            jumpToMessage(Number(quoteJump.dataset.quoteMessageId));
+                            return;
+                          }
                           if (selectedMessageIds.length > 0) {
                             toggleMessageSelection(message.id);
                             return;
@@ -2012,6 +2053,12 @@ function App() {
               })}
               <div ref={bottomRef} />
             </div>
+            {returnBottomVisible ? (
+              <button className="return-bottom-button" type="button" onClick={() => scrollToBottom("smooth")}>
+                <ChevronDown size={16} />
+                <span>回到底部</span>
+              </button>
+            ) : null}
             <div className={`composer ${isStaffUser ? "has-quick" : ""}`}>
               {quoteTarget ? (
                 <div className="quote-composer-preview">
@@ -2218,7 +2265,14 @@ function App() {
                     <strong>{item.sender}</strong>
                     <span>{formatTime(item.createdAt)}</span>
                   </div>
-                  <RecordContent item={item} onOpenMedia={setViewingMedia} />
+                  <RecordContent
+                    item={item}
+                    onOpenMedia={setViewingMedia}
+                    onJumpToMessage={(messageId) => {
+                      setViewingBundle(null);
+                      window.setTimeout(() => jumpToMessage(messageId), 0);
+                    }}
+                  />
                 </article>
               ))}
             </div>
@@ -2429,7 +2483,11 @@ function MessageBubble({ message, onMediaLoad }: { message: ChatMessage; onMedia
   if (quoteBody?.quote) {
     return (
       <div className="bubble quote-text-bubble">
-        <div className="quoted-message">
+        <div
+          className="quoted-message quote-jump"
+          data-quote-message-id={quoteBody.quote.messageId}
+          title="点击定位到引用消息"
+        >
           <strong>{quoteBody.quote.sender}</strong>
           <span>{quoteBody.quote.preview}</span>
         </div>
@@ -2503,7 +2561,15 @@ function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: (
   );
 }
 
-function RecordContent({ item, onOpenMedia }: { item: BundleBody["items"][number]; onOpenMedia?: (media: MediaBody) => void }) {
+function RecordContent({
+  item,
+  onOpenMedia,
+  onJumpToMessage,
+}: {
+  item: BundleBody["items"][number];
+  onOpenMedia?: (media: MediaBody) => void;
+  onJumpToMessage?: (messageId: number) => void;
+}) {
   if (item.type === "image") {
     const media = parseBody<MediaBody>(item.body);
     if (!media) return <p>[图片]</p>;
@@ -2541,10 +2607,14 @@ function RecordContent({ item, onOpenMedia }: { item: BundleBody["items"][number
   if (quoteBody?.quote) {
     return (
       <div className="record-quote">
-        <div className="quoted-message">
+        <button
+          className="quoted-message quote-jump record-quote-jump"
+          type="button"
+          onClick={() => onJumpToMessage?.(quoteBody.quote.messageId)}
+        >
           <strong>{quoteBody.quote.sender}</strong>
           <span>{quoteBody.quote.preview}</span>
-        </div>
+        </button>
         <p>{quoteBody.text}</p>
       </div>
     );
