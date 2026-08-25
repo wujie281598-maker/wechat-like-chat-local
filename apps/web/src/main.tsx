@@ -571,6 +571,29 @@ function AdminApp() {
     }
   }
 
+  async function copyInviteLink(code: string) {
+    const url = inviteUrl(code);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        const input = document.createElement("input");
+        input.value = url;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.left = "-9999px";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+      }
+      setError("");
+      window.alert("链接已复制");
+    } catch {
+      showError("复制失败，请手动复制链接");
+    }
+  }
+
   async function toggleUserStatus(user: User) {
     const nextStatus = user.status === "active" ? "disabled" : "active";
     setError("");
@@ -786,7 +809,10 @@ function AdminApp() {
                   <header><strong>{link.title}</strong><span className={link.status === "active" ? "status-active" : "status-disabled"}>{link.status === "active" ? "启用" : "停用"}</span></header>
                   <p>客服：{link.owner_name}</p>
                   <p>访问 {link.visits} · 今日访问 {link.today_visits} · 客户 {link.customers}</p>
-                  <div className="admin-url">{inviteUrl(link.code)}</div>
+                  <div className="admin-link-url-row">
+                    <div className="admin-url">{inviteUrl(link.code)}</div>
+                    <button type="button" onClick={() => void copyInviteLink(link.code)}>复制</button>
+                  </div>
                   <div className="row-actions">
                     <button onClick={() => void toggleLinkStatus(link)}>{link.status === "active" ? "停用" : "启用"}</button>
                     <button className="danger-action" onClick={() => void deleteLink(link)}>删除</button>
@@ -1014,6 +1040,17 @@ function App() {
     setMessages([]);
     setMessagesLoading(true);
     void loadMessages(conversationId, { showSwitching: true }).catch(handleSessionError);
+  }
+
+  function openUnreadConversation() {
+    setMode("chats");
+    const unreadConversation = conversations.find((conversation) => conversation.unread_count > 0);
+    if (!unreadConversation) return;
+    if (unreadConversation.id === activeConversationId) {
+      scrollToBottom("smooth");
+      return;
+    }
+    openConversation(unreadConversation.id);
   }
 
   function upsertMessage(message: ChatMessage) {
@@ -1817,7 +1854,7 @@ function App() {
         </div>
 
         <nav className="tabs">
-          <button className={mode === "chats" ? "active" : ""} onClick={() => setMode("chats")}>
+          <button className={mode === "chats" ? "active" : ""} onClick={openUnreadConversation}>
             <MessageCircle size={17} />
             聊天
             {totalUnread > 0 ? <em>{totalUnread}</em> : null}

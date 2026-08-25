@@ -555,9 +555,31 @@ button {
   white-space: nowrap;
 }
 
+.admin-link-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.admin-link-url-row button {
+  height: 28px;
+  border: 1px solid rgba(87, 107, 149, 0.24);
+  border-radius: 6px;
+  padding: 0 10px;
+  color: #576b95;
+  background: #f5f7fb;
+}
+
+.admin-link-url-row button:hover {
+  border-color: rgba(7, 193, 96, 0.35);
+  color: var(--green);
+  background: #f7fff9;
+}
+
 .link-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -582,6 +604,8 @@ button {
 
 .link-card-main {
   min-width: 0;
+  display: grid;
+  gap: 6px;
 }
 
 .link-card-main header {
@@ -592,15 +616,21 @@ button {
   margin: 0 0 8px;
 }
 
+.link-card-main header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .link-card-main p {
-  margin: 0 0 6px;
+  margin: 0;
   color: var(--muted);
   font-size: 13px;
 }
 
 .link-card-main button {
   height: 30px;
-  margin-top: 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: white;
