@@ -152,6 +152,15 @@ function getVideoMimeType(file: Express.Multer.File) {
   return "video/mp4";
 }
 
+async function saveClientPoster(dataUrl: unknown) {
+  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/jpeg;base64,")) return null;
+  const base64 = dataUrl.slice("data:image/jpeg;base64,".length);
+  if (base64.length > 2_000_000) return null;
+  const posterName = `${Date.now()}-${crypto.randomUUID()}-poster.jpg`;
+  await fs.writeFile(join(uploadDir, posterName), Buffer.from(base64, "base64"));
+  return `/uploads/${posterName}`;
+}
+
 function runFfmpeg(args: string[]) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(ffmpegPath, args, { windowsHide: true });
@@ -229,7 +238,18 @@ async function transcodeVideoForChat(file: Express.Multer.File) {
       "-max_muxing_queue_size", "1024",
     ];
     try {
-      await runFfmpeg([...commonArgs, "-c:v", "libx264", "-preset", "veryfast", mp4Path]);
+      await runFfmpeg([
+        ...commonArgs,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-profile:v",
+        "baseline",
+        "-level",
+        "3.1",
+        mp4Path,
+      ]);
       transcodeOk = true;
     } catch {
       try {
@@ -909,6 +929,7 @@ app.post("/api/conversations/:id/uploads", upload.single("file"), async (request
 
   const type = isVideoUpload(file) ? "video" : "image";
   const originalMimeType = type === "video" ? getVideoMimeType(file) : file.mimetype;
+  const clientPosterUrl = type === "video" ? await saveClientPoster(request.body.poster) : null;
 
   try {
     const media =
@@ -938,7 +959,7 @@ app.post("/api/conversations/:id/uploads", upload.single("file"), async (request
       url: media.url,
       originalUrl: media.originalUrl,
       originalMimeType: media.originalMimeType,
-      posterUrl: media.posterUrl,
+      posterUrl: media.posterUrl ?? clientPosterUrl,
       name: type === "video" ? `${basename(file.originalname, extname(file.originalname))}.mp4` : file.originalname,
       size: media.size,
       originalSize: media.originalSize,

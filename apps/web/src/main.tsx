@@ -332,6 +332,114 @@ function userUploadErrorMessage(error: unknown, fallback = "上传失败，请�
   return message.length > 80 ? fallback : message;
 }
 
+function isVideoFile(file: File | { name?: string; type?: string }) {
+  const extension = file.name?.split(".").pop()?.toLowerCase() ?? "";
+  return Boolean(file.type?.startsWith("video/")) || ["mp4", "mov", "m4v", "webm", "avi", "mkv"].includes(extension);
+}
+
+function captureVideoPoster(file: File | Blob): Promise<string | null> {
+  return new Promise((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    let settled = false;
+    const finish = (poster: string | null) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(objectUrl);
+      video.removeAttribute("src");
+      video.load();
+      resolve(poster);
+    };
+    const timer = window.setTimeout(() => finish(null), 1200);
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.src = objectUrl;
+    video.onloadedmetadata = () => {
+      try {
+        video.currentTime = Math.min(0.2, Math.max(0, (video.duration || 1) - 0.05));
+      } catch {
+        window.clearTimeout(timer);
+        finish(null);
+      }
+    };
+    video.onseeked = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth || 320;
+        canvas.height = video.videoHeight || 568;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          window.clearTimeout(timer);
+          finish(null);
+          return;
+        }
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        window.clearTimeout(timer);
+        finish(canvas.toDataURL("image/jpeg", 0.78));
+      } catch {
+        window.clearTimeout(timer);
+        finish(null);
+      }
+    };
+    video.onerror = () => {
+      window.clearTimeout(timer);
+      finish(null);
+    };
+  });
+}
+
+function captureVideoPosterFromUrl(url: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    let settled = false;
+    const finish = (poster: string | null) => {
+      if (settled) return;
+      settled = true;
+      video.removeAttribute("src");
+      video.load();
+      resolve(poster);
+    };
+    const timer = window.setTimeout(() => finish(null), 5000);
+    video.crossOrigin = "anonymous";
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.src = url;
+    video.onloadedmetadata = () => {
+      try {
+        video.currentTime = Math.min(0.2, Math.max(0, (video.duration || 1) - 0.05));
+      } catch {
+        window.clearTimeout(timer);
+        finish(null);
+      }
+    };
+    video.onseeked = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth || 320;
+        canvas.height = video.videoHeight || 568;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          window.clearTimeout(timer);
+          finish(null);
+          return;
+        }
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        window.clearTimeout(timer);
+        finish(canvas.toDataURL("image/jpeg", 0.78));
+      } catch {
+        window.clearTimeout(timer);
+        finish(null);
+      }
+    };
+    video.onerror = () => {
+      window.clearTimeout(timer);
+      finish(null);
+    };
+  });
+}
+
 function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number | null) => void }) {
   const [loginMode, setLoginMode] = useState<"customer" | "service">("customer");
   const [phone, setPhone] = useState("");
@@ -1101,9 +1209,13 @@ function App() {
   const hasMoreMessagesRef = useRef(false);
   const olderMessagesLoadingRef = useRef(false);
   const skipNextMessageAutoScrollRef = useRef(false);
+  const mediaViewerScrollTopRef = useRef(0);
+  const mediaViewerHeightLockedRef = useRef(false);
+  const mediaViewerRecoverTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const updateAppHeight = () => {
+      if (mediaViewerHeightLockedRef.current) return;
       const height = window.visualViewport?.height ?? window.innerHeight;
       const width = window.visualViewport?.width ?? window.innerWidth;
       const isTouchDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
@@ -1472,6 +1584,7 @@ function App() {
       stopCamera();
       if (capturedMedia) URL.revokeObjectURL(capturedMedia.url);
       if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+      if (mediaViewerRecoverTimerRef.current) window.clearTimeout(mediaViewerRecoverTimerRef.current);
     };
   }, []);
 
@@ -1737,19 +1850,25 @@ function App() {
     const conversationId = activeConversationIdRef.current;
     if (!currentUser || !conversationId || !files?.length || uploading) return;
     const selectedFiles = Array.from(files);
-    const oversizedVideo = selectedFiles.find((file) => file.type.startsWith("video/") && file.size > MAX_VIDEO_UPLOAD_SIZE);
+    const oversizedVideo = selectedFiles.find((file) => isVideoFile(file) && file.size > MAX_VIDEO_UPLOAD_SIZE);
     if (oversizedVideo) {
       setNotice(`视频太大（${formatFileSize(oversizedVideo.size)}），请压缩到 80MB 内再发`);
       return;
     }
     let uploaded = false;
     setUploading(true);
-    const hasVideo = selectedFiles.some((file) => file.type.startsWith("video/"));
+    const hasVideo = selectedFiles.some((file) => isVideoFile(file));
     setNotice(hasVideo ? "正在上传并处理视频..." : `正在上传 ${selectedFiles.length} 个文件...`);
     try {
       for (const file of selectedFiles) {
         const formData = new FormData();
         formData.append("userId", String(currentUser.id));
+        if (isVideoFile(file)) {
+          setNotice("正在生成视频封面...");
+          const poster = await captureVideoPoster(file);
+          if (poster) formData.append("poster", poster);
+          setNotice("正在上传并处理视频...");
+        }
         formData.append("file", file);
         const response = await fetch(`${API_URL}/api/conversations/${conversationId}/uploads`, {
           method: "POST",
@@ -1778,7 +1897,7 @@ function App() {
   async function uploadDroppedFiles(files: File[]) {
     const transfer = new DataTransfer();
     files
-      .filter((file) => file.type.startsWith("image/") || file.type.startsWith("video/"))
+      .filter((file) => file.type.startsWith("image/") || isVideoFile(file))
       .forEach((file) => transfer.items.add(file));
     if (transfer.files.length === 0) {
       setNotice("只能发送图片或视频");
@@ -1790,15 +1909,22 @@ function App() {
   async function uploadBlob(blob: Blob, fileName: string) {
     const conversationId = activeConversationIdRef.current;
     if (!currentUser || !conversationId || uploading) return;
-    if (blob.type.startsWith("video/") && blob.size > MAX_VIDEO_UPLOAD_SIZE) {
+    const isVideoBlob = blob.type.startsWith("video/") || /\.(mp4|mov|m4v|webm|avi|mkv)$/i.test(fileName);
+    if (isVideoBlob && blob.size > MAX_VIDEO_UPLOAD_SIZE) {
       setNotice(`视频太大（${formatFileSize(blob.size)}），请压缩到 80MB 内再发`);
       return;
     }
     setUploading(true);
-    setNotice(blob.type.startsWith("video/") ? "正在上传并处理视频..." : "正在上传文件...");
+    setNotice(isVideoBlob ? "正在上传并处理视频..." : "正在上传文件...");
     try {
       const formData = new FormData();
       formData.append("userId", String(currentUser.id));
+      if (isVideoBlob) {
+        setNotice("正在生成视频封面...");
+        const poster = await captureVideoPoster(blob);
+        if (poster) formData.append("poster", poster);
+        setNotice("正在上传并处理视频...");
+      }
       formData.append("file", new File([blob], fileName, { type: blob.type }));
       const response = await fetch(`${API_URL}/api/conversations/${conversationId}/uploads`, {
         method: "POST",
@@ -2113,11 +2239,43 @@ function App() {
     }
   }
 
+  function openMediaViewer(media: MediaBody) {
+    if (mediaViewerRecoverTimerRef.current) {
+      window.clearTimeout(mediaViewerRecoverTimerRef.current);
+      mediaViewerRecoverTimerRef.current = null;
+    }
+    mediaViewerScrollTopRef.current = messageListRef.current?.scrollTop ?? 0;
+    mediaViewerHeightLockedRef.current = true;
+    document.documentElement.classList.add("media-viewer-open");
+    setMediaViewerError("");
+    setMediaViewerLoading(media.mimeType.startsWith("video/"));
+    setMediaViewerUrl(media.url);
+    setViewingMedia(media);
+  }
+
   function closeMediaViewer() {
+    skipNextMessageAutoScrollRef.current = true;
     setMediaViewerError("");
     setMediaViewerLoading(false);
     setMediaViewerUrl("");
     setViewingMedia(null);
+    document.documentElement.classList.remove("media-viewer-open");
+    window.requestAnimationFrame(() => {
+      const list = messageListRef.current;
+      if (list) {
+        list.style.scrollBehavior = "auto";
+        list.scrollTop = mediaViewerScrollTopRef.current;
+        window.setTimeout(() => {
+          list.style.scrollBehavior = "";
+        }, 120);
+      }
+    });
+    if (mediaViewerRecoverTimerRef.current) window.clearTimeout(mediaViewerRecoverTimerRef.current);
+    mediaViewerRecoverTimerRef.current = window.setTimeout(() => {
+      mediaViewerHeightLockedRef.current = false;
+      const height = window.visualViewport?.height ?? window.innerHeight;
+      document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+    }, 260);
   }
 
   async function writeClipboardText(text: string) {
@@ -2549,12 +2707,7 @@ function App() {
                           }
                           if (message.type === "image" || message.type === "video") {
                             const media = parseBody<MediaBody>(message.body);
-                            if (media) {
-                              setMediaViewerError("");
-                              setMediaViewerLoading(message.type === "video");
-                              setMediaViewerUrl(media.url);
-                              setViewingMedia(media);
-                            }
+                            if (media) openMediaViewer(media);
                           }
                         }}
                         onContextMenu={(event) => {
@@ -2820,10 +2973,7 @@ function App() {
                   <RecordContent
                     item={item}
                     onOpenMedia={(media) => {
-                      setMediaViewerError("");
-                      setMediaViewerLoading(media.mimeType.startsWith("video/"));
-                      setMediaViewerUrl(media.url);
-                      setViewingMedia(media);
+                      openMediaViewer(media);
                     }}
                     onJumpToMessage={(messageId) => {
                       setViewingBundle(null);
@@ -2839,8 +2989,6 @@ function App() {
       {viewingMedia ? (
         <div
           className="media-viewer"
-          onPointerDownCapture={(event) => event.stopPropagation()}
-          onTouchStartCapture={(event) => event.stopPropagation()}
           onClick={closeMediaViewer}
         >
           <button
@@ -2884,8 +3032,11 @@ function App() {
                 key={mediaViewerUrl || viewingMedia.url}
                 src={`${API_URL}${mediaViewerUrl || viewingMedia.url}`}
                 controls
-                autoPlay
                 playsInline
+                preload="metadata"
+                onPointerDown={(event) => event.stopPropagation()}
+                onTouchStart={(event) => event.stopPropagation()}
+                onTouchEnd={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
                 onLoadedData={() => {
                   setMediaViewerLoading(false);
@@ -3157,8 +3308,15 @@ function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: (
 
   useEffect(() => {
     setPoster(serverPoster);
-    onMediaLoad?.();
-  }, [serverPoster, onMediaLoad]);
+    if (serverPoster) return;
+    let cancelled = false;
+    void captureVideoPosterFromUrl(`${API_URL}${media.url}`).then((nextPoster) => {
+      if (!cancelled && nextPoster) setPoster(nextPoster);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [media.url, serverPoster]);
 
   function updatePosterSize(event: React.SyntheticEvent<HTMLImageElement>) {
     const image = event.currentTarget;
