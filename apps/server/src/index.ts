@@ -1,9 +1,11 @@
 import cors from "cors";
 import express from "express";
 import multer from "multer";
+import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdirSync } from "node:fs";
-import { extname, join } from "node:path";
+import { mkdirSync, existsSync, promises as fs } from "node:fs";
+import { basename, extname, join } from "node:path";
 import { Server } from "socket.io";
 import { z } from "zod";
 import {
@@ -70,6 +72,7 @@ const phoneSchema = z.string().trim().regex(/^\d{11}$/);
 const credentialSchema = z.string().trim().min(3).max(32).regex(/^[A-Za-z0-9_-]+$/);
 const uploadDir = join(process.cwd(), "uploads");
 mkdirSync(uploadDir, { recursive: true });
+const ffmpegPath = process.env.FFMPEG_PATH || "ffmpeg";
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -95,7 +98,16 @@ const upload = multer({
 
 app.use(cors({ origin: true }));
 app.use(express.json());
-app.use("/uploads", express.static(uploadDir));
+app.use(
+  "/uploads",
+  express.static(uploadDir, {
+    acceptRanges: true,
+    maxAge: "7d",
+    setHeaders: (response) => {
+      response.setHeader("Access-Control-Allow-Origin", "*");
+    },
+  }),
+);
 
 app.get("/health", (_request, response) => {
   response.json({ ok: true });
@@ -106,6 +118,89 @@ function emitNewMessage(message: ReturnType<typeof createMessage>) {
     io.to(`user:${userId}`).emit("message:new", message);
   }
   io.emit("conversation:changed", { conversationId: message.conversation_id });
+}
+
+function runFfmpeg(args: string[]) {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(ffmpegPath, args, { windowsHide: true });
+    let errorOutput = "";
+    child.stderr.on("data", (chunk) => {
+      errorOutput += chunk.toString();
+      if (errorOutput.length > 4000) errorOutput = errorOutput.slice(-4000);
+    });
+    child.on("error", (error) => {
+      reject(new Error(error.message.includes("ENOENT") ? "服务器未安装 ffmpeg，暂时不能处理视频" : error.message));
+    });
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(errorOutput.trim() || "视频转码失败"));
+    });
+  });
+}
+
+async function transcodeVideoForChat(file: Express.Multer.File) {
+  const sourcePath = file.path;
+  const baseName = basename(file.filename, extname(file.filename));
+  const mp4Name = `${baseName}-chat.mp4`;
+  const posterName = `${baseName}-poster.jpg`;
+  const mp4Path = join(uploadDir, mp4Name);
+  const posterPath = join(uploadDir, posterName);
+
+  await runFfmpeg([
+    "-y",
+    "-i",
+    sourcePath,
+    "-vf",
+    "scale='min(720,iw)':-2",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-profile:v",
+    "baseline",
+    "-level",
+    "3.1",
+    "-pix_fmt",
+    "yuv420p",
+    "-movflags",
+    "+faststart",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-max_muxing_queue_size",
+    "1024",
+    mp4Path,
+  ]);
+
+  await runFfmpeg([
+    "-y",
+    "-ss",
+    "00:00:00.2",
+    "-i",
+    mp4Path,
+    "-frames:v",
+    "1",
+    "-vf",
+    "scale='min(720,iw)':-2",
+    "-q:v",
+    "4",
+    posterPath,
+  ]).catch(() => undefined);
+
+  const output = await fs.stat(mp4Path);
+  if (sourcePath !== mp4Path) {
+    await fs.unlink(sourcePath).catch(() => undefined);
+  }
+
+  return {
+    url: `/uploads/${mp4Name}`,
+    posterUrl: existsSync(posterPath) ? `/uploads/${posterName}` : null,
+    size: output.size,
+  };
 }
 
 app.post("/api/login", (request, response) => {
@@ -734,7 +829,7 @@ app.patch("/api/quick-replies/reorder/list", (request, response) => {
   }
 });
 
-app.post("/api/conversations/:id/uploads", upload.single("file"), (request, response) => {
+app.post("/api/conversations/:id/uploads", upload.single("file"), async (request, response) => {
   const conversationId = Number(request.params.id);
   const userId = Number(request.body.userId);
   const file = request.file;
@@ -745,14 +840,25 @@ app.post("/api/conversations/:id/uploads", upload.single("file"), (request, resp
   }
 
   const type = file.mimetype.startsWith("video/") ? "video" : "image";
-  const body = JSON.stringify({
-    url: `/uploads/${file.filename}`,
-    name: file.originalname,
-    size: file.size,
-    mimeType: file.mimetype,
-  });
 
   try {
+    const media =
+      type === "video"
+        ? await transcodeVideoForChat(file)
+        : {
+            url: `/uploads/${file.filename}`,
+            posterUrl: null,
+            size: file.size,
+          };
+    const body = JSON.stringify({
+      url: media.url,
+      posterUrl: media.posterUrl,
+      name: type === "video" ? `${basename(file.originalname, extname(file.originalname))}.mp4` : file.originalname,
+      size: media.size,
+      originalSize: file.size,
+      mimeType: type === "video" ? "video/mp4" : file.mimetype,
+      transcoded: type === "video",
+    });
     const message = createMessage({
       conversationId,
       senderId: userId,

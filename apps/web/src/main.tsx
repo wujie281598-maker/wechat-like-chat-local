@@ -34,6 +34,7 @@ import "./styles.css";
 const API_URL = window.location.origin;
 const MESSAGE_NOTIFY_DISMISSED_KEY = "doudou-im-message-notify-dismissed";
 const MESSAGE_PAGE_SIZE = 50;
+const MAX_VIDEO_UPLOAD_SIZE = 80 * 1024 * 1024;
 function makeClientId(userId: number) {
   const randomUuid = globalThis.crypto?.randomUUID?.();
   if (randomUuid) return `${userId}-${Date.now()}-${randomUuid}`;
@@ -124,9 +125,12 @@ type CapturedMedia = {
 
 type MediaBody = {
   url: string;
+  posterUrl?: string | null;
   name: string;
   size: number;
+  originalSize?: number;
   mimeType: string;
+  transcoded?: boolean;
 };
 
 type BundleBody = {
@@ -286,12 +290,35 @@ function quotePreviewForMessage(message: ChatMessage) {
   return displayTextBody(message.body).slice(0, 80);
 }
 
+function copyTextForMessage(message: ChatMessage) {
+  if (message.revoked_at) return "";
+  if (message.type === "image" || message.type === "video") {
+    const media = parseBody<MediaBody>(message.body);
+    return media?.url ? `${API_URL}${media.url}` : "";
+  }
+  if (message.type === "forward_bundle") {
+    const bundle = parseBody<BundleBody>(message.body);
+    if (!bundle) return "[聊天记录]";
+    return [
+      bundle.title,
+      ...bundle.items.map((item) => `${item.sender}: ${displayTextBody(item.body)}`),
+    ].join("\n");
+  }
+  return displayTextBody(message.body);
+}
+
 function formatDuration(seconds: number | null) {
   if (!seconds || !Number.isFinite(seconds)) return "";
   const totalSeconds = Math.max(0, Math.round(seconds));
   const minutes = Math.floor(totalSeconds / 60);
   const rest = totalSeconds % 60;
   return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)}MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)}KB`;
+  return `${bytes}B`;
 }
 
 function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number | null) => void }) {
@@ -1003,6 +1030,8 @@ function App() {
   const [forwardSending, setForwardSending] = useState(false);
   const [viewingBundle, setViewingBundle] = useState<BundleBody | null>(null);
   const [viewingMedia, setViewingMedia] = useState<MediaBody | null>(null);
+  const [mediaViewerError, setMediaViewerError] = useState("");
+  const [mediaViewerLoading, setMediaViewerLoading] = useState(false);
   const [actionMenu, setActionMenu] = useState<{ messageId: number; x: number; y: number } | null>(null);
   const [conversationMenu, setConversationMenu] = useState<{ conversationId: number; x: number; y: number } | null>(null);
   const [swipedConversationId, setSwipedConversationId] = useState<number | null>(null);
@@ -1396,17 +1425,17 @@ function App() {
   async function loadOlderMessages() {
     const conversationId = activeConversationIdRef.current;
     const oldestMessageId = messagesRef.current[0]?.id;
-    if (!conversationId || !oldestMessageId || olderMessagesLoadingRef.current || !hasMoreMessagesRef.current) return false;
-    await loadMessages(conversationId, { beforeMessageId: oldestMessageId, prepend: true });
-    return true;
+    if (!conversationId || !oldestMessageId || olderMessagesLoadingRef.current || !hasMoreMessagesRef.current) return [];
+    return loadMessages(conversationId, { beforeMessageId: oldestMessageId, prepend: true });
   }
 
   async function loadOlderMessagesUntil(messageId: number) {
     for (let attempt = 0; attempt < 6; attempt += 1) {
       if (messagesRef.current.some((message) => message.id === messageId)) return true;
       if (!hasMoreMessagesRef.current || olderMessagesLoadingRef.current) return false;
-      const loaded = await loadOlderMessages();
-      if (!loaded) return false;
+      const loadedMessages = await loadOlderMessages();
+      if (loadedMessages.length === 0) return false;
+      if (loadedMessages.some((message) => message.id === messageId)) return true;
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     }
     return messagesRef.current.some((message) => message.id === messageId);
@@ -1433,6 +1462,15 @@ function App() {
       if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!viewingMedia?.mimeType.startsWith("video/") || !mediaViewerLoading || mediaViewerError) return;
+    const timer = window.setTimeout(() => {
+      setMediaViewerLoading(false);
+      setMediaViewerError("视频加载较慢，可先保存到手机相册查看");
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [viewingMedia, mediaViewerLoading, mediaViewerError]);
 
   async function loadUsers(userId: number) {
     const result = await api<{ users: User[] }>(`/api/users?userId=${userId}`);
@@ -1482,8 +1520,8 @@ function App() {
   async function loadMessages(
     conversationId: number,
     options: { showSwitching?: boolean; beforeMessageId?: number; prepend?: boolean } = {},
-  ) {
-    if (!currentUser) return;
+  ): Promise<ChatMessage[]> {
+    if (!currentUser) return [];
     const loadSeq = options.prepend ? messageLoadSeqRef.current : ++messageLoadSeqRef.current;
     if (options.showSwitching) setMessagesLoading(true);
     if (options.prepend) {
@@ -1503,7 +1541,7 @@ function App() {
         `/api/conversations/${conversationId}/messages?${params.toString()}`,
       );
       if (loadSeq !== messageLoadSeqRef.current || activeConversationIdRef.current !== conversationId) {
-        return;
+        return [];
       }
       hasMoreMessagesRef.current = result.hasMore;
       setHasMoreMessages(result.hasMore);
@@ -1521,6 +1559,7 @@ function App() {
         window.setTimeout(() => scrollToBottom("auto"), 220);
       }
       if (!options.prepend) await loadConversations(currentUser.id);
+      return result.messages;
     } finally {
       if (loadSeq === messageLoadSeqRef.current) setMessagesLoading(false);
       if (options.prepend) {
@@ -1685,11 +1724,18 @@ function App() {
   async function uploadFiles(files: FileList | null, source: "picker" | "capture" = "picker") {
     const conversationId = activeConversationIdRef.current;
     if (!currentUser || !conversationId || !files?.length || uploading) return;
+    const selectedFiles = Array.from(files);
+    const oversizedVideo = selectedFiles.find((file) => file.type.startsWith("video/") && file.size > MAX_VIDEO_UPLOAD_SIZE);
+    if (oversizedVideo) {
+      setNotice(`视频太大（${formatFileSize(oversizedVideo.size)}），请压缩到 80MB 内再发`);
+      return;
+    }
     let uploaded = false;
     setUploading(true);
-    setNotice(`正在上传 ${files.length} 个文件...`);
+    const hasVideo = selectedFiles.some((file) => file.type.startsWith("video/"));
+    setNotice(hasVideo ? "正在上传并处理视频..." : `正在上传 ${selectedFiles.length} 个文件...`);
     try {
-      for (const file of Array.from(files)) {
+      for (const file of selectedFiles) {
         const formData = new FormData();
         formData.append("userId", String(currentUser.id));
         formData.append("file", file);
@@ -1732,8 +1778,12 @@ function App() {
   async function uploadBlob(blob: Blob, fileName: string) {
     const conversationId = activeConversationIdRef.current;
     if (!currentUser || !conversationId || uploading) return;
+    if (blob.type.startsWith("video/") && blob.size > MAX_VIDEO_UPLOAD_SIZE) {
+      setNotice(`视频太大（${formatFileSize(blob.size)}），请压缩到 80MB 内再发`);
+      return;
+    }
     setUploading(true);
-    setNotice("正在上传文件...");
+    setNotice(blob.type.startsWith("video/") ? "正在上传并处理视频..." : "正在上传文件...");
     try {
       const formData = new FormData();
       formData.append("userId", String(currentUser.id));
@@ -1963,7 +2013,7 @@ function App() {
 
   function openActionMenu(messageId: number, x: number, y: number) {
     setToolPanelOpen(false);
-    const menuWidth = Math.min(382, window.innerWidth - 24);
+    const menuWidth = Math.min(440, window.innerWidth - 24);
     const menuHeight = 48;
     const margin = 12;
     setActionMenu({
@@ -2006,10 +2056,12 @@ function App() {
 
   function startForwardFromMenu(mode: ForwardMode) {
     if (!actionMenu) return;
-    setSelectedMessageIds([actionMenu.messageId]);
-    setForwardTargetIds([]);
-    setNotice(mode === "bundle" ? "已进入多选，选完后点合并转发" : "已进入多选，选完后点逐条转发");
+    setSelectedMessageIds((ids) => {
+      if (ids.length > 0) return ids.includes(actionMenu.messageId) ? ids : [...ids, actionMenu.messageId];
+      return [actionMenu.messageId];
+    });
     setActionMenu(null);
+    openForwardModal(mode);
   }
 
   function beginRemarkEditing(conversation: Conversation) {
@@ -2045,6 +2097,44 @@ function App() {
       setNotice("已保存");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "保存失败");
+    }
+  }
+
+  async function writeClipboardText(text: string) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.style.top = "0";
+    document.body.appendChild(input);
+    input.focus();
+    input.select();
+    const ok = document.execCommand("copy");
+    input.remove();
+    if (!ok) throw new Error("复制失败");
+  }
+
+  async function copyMessageFromMenu() {
+    if (!actionMenu) return;
+    const message = messages.find((item) => item.id === actionMenu.messageId);
+    if (!message || message.revoked_at) return;
+    const text = copyTextForMessage(message).trim();
+    if (!text) {
+      setNotice("这条消息暂不支持复制");
+      setActionMenu(null);
+      return;
+    }
+    try {
+      await writeClipboardText(text);
+      setNotice("已复制");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "复制失败");
+    } finally {
+      setActionMenu(null);
     }
   }
 
@@ -2352,16 +2442,6 @@ function App() {
                 </button>
               </div>
             </header>
-            {selectedMessageIds.length > 0 ? (
-              <div className="selection-bar">
-                <span>已选 {selectedMessageIds.length} 条</span>
-                <button onClick={() => openForwardModal("separate")}>逐条转发</button>
-                <button onClick={() => openForwardModal("bundle")}>合并转发</button>
-                <button className="plain-icon" onClick={() => setSelectedMessageIds([])} aria-label="取消多选">
-                  <X size={16} />
-                </button>
-              </div>
-            ) : null}
             <div className={`message-list ${messagesLoading ? "is-switching" : ""}`} ref={messageListRef} onScroll={handleMessageListScroll}>
               {olderMessagesLoading ? (
                 <div className="older-loading">
@@ -2449,7 +2529,11 @@ function App() {
                           }
                           if (message.type === "image" || message.type === "video") {
                             const media = parseBody<MediaBody>(message.body);
-                            if (media) setViewingMedia(media);
+                            if (media) {
+                              setMediaViewerError("");
+                              setMediaViewerLoading(message.type === "video");
+                              setViewingMedia(media);
+                            }
                           }
                         }}
                         onContextMenu={(event) => {
@@ -2462,7 +2546,11 @@ function App() {
                         onPointerCancel={cancelLongPress}
                         onPointerLeave={cancelLongPress}
                       >
-                        <MessageBubble message={message} onMediaLoad={scrollToBottomIfNearBottom} />
+                        <MessageBubble
+                          message={message}
+                          onMediaLoad={scrollToBottomIfNearBottom}
+                          onQuoteJump={(messageId) => void jumpToMessage(messageId)}
+                        />
                       </button>
                     </div>
                     {mine ? (
@@ -2710,7 +2798,11 @@ function App() {
                   </div>
                   <RecordContent
                     item={item}
-                    onOpenMedia={setViewingMedia}
+                    onOpenMedia={(media) => {
+                      setMediaViewerError("");
+                      setMediaViewerLoading(media.mimeType.startsWith("video/"));
+                      setViewingMedia(media);
+                    }}
                     onJumpToMessage={(messageId) => {
                       setViewingBundle(null);
                       window.setTimeout(() => void jumpToMessage(messageId), 0);
@@ -2723,8 +2815,23 @@ function App() {
         </div>
       ) : null}
       {viewingMedia ? (
-        <div className="media-viewer" onClick={() => setViewingMedia(null)}>
-          <button className="media-viewer-close" onClick={() => setViewingMedia(null)} aria-label="关闭图片视频预览">
+        <div
+          className="media-viewer"
+          onClick={() => {
+            setMediaViewerError("");
+            setMediaViewerLoading(false);
+            setViewingMedia(null);
+          }}
+        >
+          <button
+            className="media-viewer-close"
+            onClick={() => {
+              setMediaViewerError("");
+              setMediaViewerLoading(false);
+              setViewingMedia(null);
+            }}
+            aria-label="关闭图片视频预览"
+          >
             <X size={30} />
           </button>
           <button
@@ -2739,7 +2846,46 @@ function App() {
             <span>保存</span>
           </button>
           {viewingMedia.mimeType.startsWith("video/") ? (
-            <video src={`${API_URL}${viewingMedia.url}`} controls autoPlay onClick={(event) => event.stopPropagation()} />
+            <>
+              <video
+                src={`${API_URL}${viewingMedia.url}`}
+                controls
+                autoPlay
+                playsInline
+                onClick={(event) => event.stopPropagation()}
+                onLoadedData={() => {
+                  setMediaViewerLoading(false);
+                  setMediaViewerError("");
+                }}
+                onCanPlay={() => {
+                  setMediaViewerLoading(false);
+                  setMediaViewerError("");
+                }}
+                onPlaying={() => {
+                  setMediaViewerLoading(false);
+                  setMediaViewerError("");
+                }}
+                onWaiting={() => setMediaViewerLoading(true)}
+                onError={() => {
+                  setMediaViewerLoading(false);
+                  setMediaViewerError("视频加载失败，可先保存到手机相册查看");
+                }}
+              />
+              {mediaViewerLoading && !mediaViewerError ? (
+                <div className="media-viewer-loading" onClick={(event) => event.stopPropagation()}>
+                  <span />
+                  <strong>正在加载视频...</strong>
+                </div>
+              ) : null}
+              {mediaViewerError ? (
+                <div className="media-viewer-error" onClick={(event) => event.stopPropagation()}>
+                  <strong>{mediaViewerError}</strong>
+                  <button type="button" onClick={() => void saveMedia(viewingMedia)}>
+                    保存视频
+                  </button>
+                </div>
+              ) : null}
+            </>
           ) : (
             <img src={`${API_URL}${viewingMedia.url}`} alt={viewingMedia.name} onClick={(event) => event.stopPropagation()} />
           )}
@@ -2755,16 +2901,17 @@ function App() {
             {messages.find((message) => message.id === actionMenu.messageId)?.sender_id === currentUser.id ? (
               <button onClick={() => void recallSelectedMessage()}>撤回</button>
             ) : null}
+            <button onClick={() => void copyMessageFromMenu()}>复制</button>
             <button onClick={quoteMessageFromMenu}>引用</button>
             <button onClick={() => startForwardFromMenu("separate")}>逐条转发</button>
             <button onClick={() => startForwardFromMenu("bundle")}>合并转发</button>
             <button
               onClick={() => {
-                setSelectedMessageIds([actionMenu.messageId]);
+                toggleMessageSelection(actionMenu.messageId);
                 setActionMenu(null);
               }}
             >
-              多选
+              {selectedMessageIds.includes(actionMenu.messageId) ? "取消选择" : "多选"}
             </button>
           </div>
         </div>
@@ -2884,7 +3031,15 @@ function ToolButton({ icon, label, onClick, disabled = false }: { icon: React.Re
   );
 }
 
-function MessageBubble({ message, onMediaLoad }: { message: ChatMessage; onMediaLoad?: () => void }) {
+function MessageBubble({
+  message,
+  onMediaLoad,
+  onQuoteJump,
+}: {
+  message: ChatMessage;
+  onMediaLoad?: () => void;
+  onQuoteJump?: (messageId: number) => void;
+}) {
   if (message.revoked_at) {
     return <p className="bubble">[已撤回]</p>;
   }
@@ -2929,7 +3084,19 @@ function MessageBubble({ message, onMediaLoad }: { message: ChatMessage; onMedia
         <div
           className="quoted-message quote-jump"
           data-quote-message-id={quoteBody.quote.messageId}
+          role="button"
+          tabIndex={0}
           title="点击定位到引用消息"
+          onClick={(event) => {
+            event.stopPropagation();
+            onQuoteJump?.(quoteBody.quote.messageId);
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            event.stopPropagation();
+            onQuoteJump?.(quoteBody.quote.messageId);
+          }}
         >
           <strong>{quoteBody.quote.sender}</strong>
           <span>{quoteBody.quote.preview}</span>
@@ -2944,12 +3111,17 @@ function MessageBubble({ message, onMediaLoad }: { message: ChatMessage; onMedia
 
 function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: () => void }) {
   const [duration, setDuration] = useState<number | null>(null);
-  const [poster, setPoster] = useState("");
+  const serverPoster = media.posterUrl ? `${API_URL}${media.posterUrl}` : "";
+  const [poster, setPoster] = useState(serverPoster);
   const [orientation, setOrientation] = useState<"portrait" | "landscape">("portrait");
   const posterPendingRef = useRef(false);
 
+  useEffect(() => {
+    setPoster(serverPoster);
+  }, [serverPoster]);
+
   function capturePoster(video: HTMLVideoElement) {
-    if (poster || !video.videoWidth || !video.videoHeight) return;
+    if (poster || serverPoster || !video.videoWidth || !video.videoHeight) return;
     try {
       const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
@@ -2978,11 +3150,13 @@ function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: (
           const video = event.currentTarget;
           setDuration(video.duration);
           setOrientation(video.videoHeight > video.videoWidth ? "portrait" : "landscape");
-          posterPendingRef.current = true;
-          try {
-            video.currentTime = Math.min(0.1, Math.max(0, (video.duration || 1) - 0.05));
-          } catch {
-            capturePoster(video);
+          if (!serverPoster) {
+            posterPendingRef.current = true;
+            try {
+              video.currentTime = Math.min(0.1, Math.max(0, (video.duration || 1) - 0.05));
+            } catch {
+              capturePoster(video);
+            }
           }
           onMediaLoad?.();
         }}
