@@ -831,10 +831,12 @@ button {
 }
 
 .list {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .conversation-swipe {
@@ -2327,6 +2329,9 @@ button {
 
   .sidebar {
     display: flex;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .chat-panel {
@@ -2435,6 +2440,12 @@ button {
 
   .conversation-swipe {
     background: #f5f6f7;
+  }
+
+  .list {
+    height: 0;
+    overflow-y: scroll;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 
   .conversation-row {
