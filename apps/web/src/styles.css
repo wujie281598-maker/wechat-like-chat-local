@@ -667,6 +667,9 @@ button {
 .sidebar {
   display: flex;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   flex-direction: column;
   border-right: 1px solid var(--line);
   background: var(--panel);
@@ -828,8 +831,10 @@ button {
 }
 
 .list {
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .conversation-swipe {
