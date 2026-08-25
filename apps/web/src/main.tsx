@@ -33,6 +33,7 @@ import "./styles.css";
 
 const API_URL = window.location.origin;
 const MESSAGE_NOTIFY_DISMISSED_KEY = "doudou-im-message-notify-dismissed";
+const MESSAGE_PAGE_SIZE = 50;
 function makeClientId(userId: number) {
   const randomUuid = globalThis.crypto?.randomUUID?.();
   if (randomUuid) return `${userId}-${Date.now()}-${randomUuid}`;
@@ -991,6 +992,8 @@ function App() {
   const [pendingConversationId, setPendingConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [draft, setDraft] = useState("");
   const [quoteTarget, setQuoteTarget] = useState<QuoteBody["quote"] | null>(null);
   const [query, setQuery] = useState("");
@@ -1043,6 +1046,9 @@ function App() {
   const activeConversationIdRef = useRef<number | null>(null);
   const messageLoadSeqRef = useRef(0);
   const currentUserRef = useRef<User | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const conversationsRef = useRef<Conversation[]>([]);
+  const autoOpenedCustomerConversationRef = useRef(false);
   const draftRef = useRef("");
   const sendingRef = useRef(false);
   const sessionBlockedRef = useRef(false);
@@ -1051,6 +1057,9 @@ function App() {
   const highlightTimerRef = useRef<number | null>(null);
   const lastNotifiedMessageIdRef = useRef<number | null>(null);
   const notificationPermissionRef = useRef<NotificationPermission | "unsupported">(notificationPermission);
+  const hasMoreMessagesRef = useRef(false);
+  const olderMessagesLoadingRef = useRef(false);
+  const skipNextMessageAutoScrollRef = useRef(false);
 
   useEffect(() => {
     const updateAppHeight = () => {
@@ -1078,7 +1087,24 @@ function App() {
 
   useEffect(() => {
     currentUserRef.current = currentUser;
+    autoOpenedCustomerConversationRef.current = false;
   }, [currentUser]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  useEffect(() => {
+    hasMoreMessagesRef.current = hasMoreMessages;
+  }, [hasMoreMessages]);
+
+  useEffect(() => {
+    olderMessagesLoadingRef.current = olderMessagesLoading;
+  }, [olderMessagesLoading]);
 
   useEffect(() => {
     notificationPermissionRef.current = notificationPermission;
@@ -1165,6 +1191,7 @@ function App() {
     setToolPanelOpen(false);
     setEditingRemark(null);
     setReturnBottomVisible(false);
+    setHasMoreMessages(false);
     setActiveConversationId(conversationId);
     setMessages([]);
     setMessagesLoading(true);
@@ -1195,6 +1222,37 @@ function App() {
       return [...current, message];
     });
     window.setTimeout(() => scrollToBottom("smooth"), 0);
+  }
+
+  function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
+    const byId = new Map<number, ChatMessage>();
+    for (const message of [...current, ...incoming]) {
+      byId.set(message.id, message);
+    }
+    return [...byId.values()].sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime() || a.id - b.id,
+    );
+  }
+
+  function updateConversationWithMessage(message: ChatMessage, options: { read: boolean; incrementUnread: boolean }) {
+    const found = conversationsRef.current.some((conversation) => conversation.id === message.conversation_id);
+    if (!found) return false;
+    setConversations((current) => {
+      const next = current.map((conversation) => {
+        if (conversation.id !== message.conversation_id) return conversation;
+        return {
+          ...conversation,
+          unread_count: options.read ? 0 : conversation.unread_count + (options.incrementUnread ? 1 : 0),
+          last_message_body: message.revoked_at ? "[撤回了一条消息]" : message.body,
+          last_message_at: message.created_at,
+        };
+      });
+      return next.sort((a, b) => {
+        if (a.is_pinned !== b.is_pinned) return b.is_pinned - a.is_pinned;
+        return new Date(b.last_message_at ?? 0).getTime() - new Date(a.last_message_at ?? 0).getTime();
+      });
+    });
+    return true;
   }
 
   async function markActiveConversationRead(conversationId: number) {
@@ -1237,11 +1295,15 @@ function App() {
       }
       if (isCurrentConversation) {
         upsertMessage(message);
+        updateConversationWithMessage(message, { read: true, incrementUnread: false });
         void markActiveConversationRead(message.conversation_id)
-          .then(() => (currentUserRef.current ? loadConversations(currentUserRef.current.id) : undefined))
           .catch(handleSessionError);
       } else {
-        void loadConversations(currentUser.id).catch(handleSessionError);
+        const updated = updateConversationWithMessage(message, {
+          read: false,
+          incrementUnread: message.sender_id !== currentUser.id,
+        });
+        if (!updated) void loadConversations(currentUser.id).catch(handleSessionError);
       }
     });
     nextSocket.on("message:changed", (message: ChatMessage) => {
@@ -1288,10 +1350,29 @@ function App() {
     });
   }
 
-  function jumpToMessage(messageId: number) {
+  function scrollToBottomIfNearBottom() {
+    const list = messageListRef.current;
+    if (!list) {
+      scrollToBottom("auto");
+      return;
+    }
+    const distanceToBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+    if (distanceToBottom < 240) {
+      scrollToBottom("auto");
+    }
+  }
+
+  async function jumpToMessage(messageId: number) {
     const target = messageListRef.current?.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
     if (!target) {
-      setNotice("引用的消息不在当前聊天记录中");
+      const loaded = await loadOlderMessagesUntil(messageId);
+      if (loaded) {
+        window.setTimeout(() => {
+          void jumpToMessage(messageId);
+        }, 0);
+        return;
+      }
+      setNotice("引用的消息较早，暂时定位不到");
       return;
     }
     target.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1307,9 +1388,39 @@ function App() {
     const distanceToBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
     const shouldShowReturnButton = !messagesLoading && distanceToBottom > 160;
     setReturnBottomVisible((visible) => (visible === shouldShowReturnButton ? visible : shouldShowReturnButton));
+    if (list.scrollTop < 80 && hasMoreMessagesRef.current && !olderMessagesLoadingRef.current && activeConversationIdRef.current) {
+      void loadOlderMessages();
+    }
+  }
+
+  async function loadOlderMessages() {
+    const conversationId = activeConversationIdRef.current;
+    const oldestMessageId = messagesRef.current[0]?.id;
+    if (!conversationId || !oldestMessageId || olderMessagesLoadingRef.current || !hasMoreMessagesRef.current) return false;
+    await loadMessages(conversationId, { beforeMessageId: oldestMessageId, prepend: true });
+    return true;
+  }
+
+  async function loadOlderMessagesUntil(messageId: number) {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      if (messagesRef.current.some((message) => message.id === messageId)) return true;
+      if (!hasMoreMessagesRef.current || olderMessagesLoadingRef.current) return false;
+      const loaded = await loadOlderMessages();
+      if (!loaded) return false;
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+    return messagesRef.current.some((message) => message.id === messageId);
   }
 
   useEffect(() => {
+    if (skipNextMessageAutoScrollRef.current) {
+      skipNextMessageAutoScrollRef.current = false;
+      return;
+    }
+    if (olderMessagesLoadingRef.current) return;
+    const list = messageListRef.current;
+    const distanceToBottom = list ? list.scrollHeight - list.scrollTop - list.clientHeight : 0;
+    if (distanceToBottom > 220) return;
     scrollToBottom(messages.length > 2 ? "auto" : "smooth");
     const timer = window.setTimeout(() => scrollToBottom("auto"), 160);
     return () => window.clearTimeout(timer);
@@ -1331,6 +1442,21 @@ function App() {
   async function loadConversations(userId: number) {
     const result = await api<{ conversations: Conversation[] }>(`/api/conversations?userId=${userId}`);
     setConversations(result.conversations);
+    const user = currentUserRef.current;
+    if (
+      user &&
+      user.id === userId &&
+      !user.phone.startsWith("staff:") &&
+      !activeConversationIdRef.current &&
+      !autoOpenedCustomerConversationRef.current
+    ) {
+      const serviceConversation = result.conversations.find((conversation) => conversation.peer_id && conversation.peer_id !== user.id);
+      if (serviceConversation) {
+        autoOpenedCustomerConversationRef.current = true;
+        setMode("chats");
+        openConversation(serviceConversation.id);
+      }
+    }
   }
 
   async function loadQuickReplies(user: User) {
@@ -1353,24 +1479,53 @@ function App() {
     await loadConversations(currentUser.id);
   }
 
-  async function loadMessages(conversationId: number, options: { showSwitching?: boolean } = {}) {
+  async function loadMessages(
+    conversationId: number,
+    options: { showSwitching?: boolean; beforeMessageId?: number; prepend?: boolean } = {},
+  ) {
     if (!currentUser) return;
-    const loadSeq = ++messageLoadSeqRef.current;
+    const loadSeq = options.prepend ? messageLoadSeqRef.current : ++messageLoadSeqRef.current;
     if (options.showSwitching) setMessagesLoading(true);
+    if (options.prepend) {
+      olderMessagesLoadingRef.current = true;
+      setOlderMessagesLoading(true);
+    }
+    const list = messageListRef.current;
+    const previousScrollHeight = list?.scrollHeight ?? 0;
+    const previousScrollTop = list?.scrollTop ?? 0;
     try {
-      const result = await api<{ messages: ChatMessage[] }>(
-        `/api/conversations/${conversationId}/messages?userId=${currentUser.id}`,
+      const params = new URLSearchParams({
+        userId: String(currentUser.id),
+        limit: String(MESSAGE_PAGE_SIZE),
+      });
+      if (options.beforeMessageId) params.set("beforeMessageId", String(options.beforeMessageId));
+      const result = await api<{ messages: ChatMessage[]; hasMore: boolean }>(
+        `/api/conversations/${conversationId}/messages?${params.toString()}`,
       );
       if (loadSeq !== messageLoadSeqRef.current || activeConversationIdRef.current !== conversationId) {
         return;
       }
-      setMessages(result.messages);
-      window.setTimeout(() => scrollToBottom("auto"), 0);
-      window.setTimeout(() => scrollToBottom("auto"), 220);
-      await loadConversations(currentUser.id);
+      hasMoreMessagesRef.current = result.hasMore;
+      setHasMoreMessages(result.hasMore);
+      if (options.prepend) {
+        skipNextMessageAutoScrollRef.current = true;
+        setMessages((current) => mergeMessages(result.messages, current));
+        window.requestAnimationFrame(() => {
+          const nextList = messageListRef.current;
+          if (!nextList) return;
+          nextList.scrollTop = nextList.scrollHeight - previousScrollHeight + previousScrollTop;
+        });
+      } else {
+        setMessages(result.messages);
+        window.setTimeout(() => scrollToBottom("auto"), 0);
+        window.setTimeout(() => scrollToBottom("auto"), 220);
+      }
+      if (!options.prepend) await loadConversations(currentUser.id);
     } finally {
-      if (loadSeq === messageLoadSeqRef.current) {
-        setMessagesLoading(false);
+      if (loadSeq === messageLoadSeqRef.current) setMessagesLoading(false);
+      if (options.prepend) {
+        olderMessagesLoadingRef.current = false;
+        setOlderMessagesLoading(false);
       }
     }
   }
@@ -1408,7 +1563,7 @@ function App() {
         }),
       });
       upsertMessage(result.message);
-      void loadConversations(currentUserValue.id).catch(handleSessionError);
+      updateConversationWithMessage(result.message, { read: true, incrementUnread: false });
       scrollToBottom("smooth");
     } catch (error) {
       setNotice(error instanceof Error ? `发送失败：${error.message}` : "发送失败");
@@ -2208,6 +2363,12 @@ function App() {
               </div>
             ) : null}
             <div className={`message-list ${messagesLoading ? "is-switching" : ""}`} ref={messageListRef} onScroll={handleMessageListScroll}>
+              {olderMessagesLoading ? (
+                <div className="older-loading">
+                  <span />
+                  <strong>正在加载历史消息...</strong>
+                </div>
+              ) : null}
               {messagesLoading ? (
                 <div className="chat-loading">
                   <span />
@@ -2273,7 +2434,7 @@ function App() {
                           const clickTarget = event.target instanceof Element ? event.target : null;
                           const quoteJump = clickTarget?.closest<HTMLElement>("[data-quote-message-id]");
                           if (quoteJump?.dataset.quoteMessageId) {
-                            jumpToMessage(Number(quoteJump.dataset.quoteMessageId));
+                            void jumpToMessage(Number(quoteJump.dataset.quoteMessageId));
                             return;
                           }
                           if (selectedMessageIds.length > 0) {
@@ -2301,7 +2462,7 @@ function App() {
                         onPointerCancel={cancelLongPress}
                         onPointerLeave={cancelLongPress}
                       >
-                        <MessageBubble message={message} onMediaLoad={() => scrollToBottom("auto")} />
+                        <MessageBubble message={message} onMediaLoad={scrollToBottomIfNearBottom} />
                       </button>
                     </div>
                     {mine ? (
@@ -2552,7 +2713,7 @@ function App() {
                     onOpenMedia={setViewingMedia}
                     onJumpToMessage={(messageId) => {
                       setViewingBundle(null);
-                      window.setTimeout(() => jumpToMessage(messageId), 0);
+                      window.setTimeout(() => void jumpToMessage(messageId), 0);
                     }}
                   />
                 </article>

@@ -586,13 +586,19 @@ app.patch("/api/conversations/:id/pin", (request, response) => {
 app.get("/api/conversations/:id/messages", (request, response) => {
   const conversationId = Number(request.params.id);
   const userId = Number(request.query.userId);
+  const limit = request.query.limit ? Number(request.query.limit) : undefined;
+  const beforeMessageId = request.query.beforeMessageId ? Number(request.query.beforeMessageId) : undefined;
   if (!conversationId || !userId) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  if ((limit !== undefined && (!Number.isInteger(limit) || limit < 1)) || (beforeMessageId !== undefined && (!Number.isInteger(beforeMessageId) || beforeMessageId < 1))) {
     response.status(400).json({ error: "参数不正确" });
     return;
   }
 
   try {
-    response.json({ messages: getMessages(conversationId, userId) });
+    response.json(getMessages(conversationId, userId, { limit, beforeMessageId }));
   } catch (error) {
     response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
   }

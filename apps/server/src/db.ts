@@ -1182,25 +1182,42 @@ export function getConversations(userId: number): ConversationRow[] {
     .all(params) as ConversationRow[];
 }
 
-export function getMessages(conversationId: number, userId: number): MessageRow[] {
+export function getMessages(
+  conversationId: number,
+  userId: number,
+  options: { limit?: number; beforeMessageId?: number } = {},
+): { messages: MessageRow[]; hasMore: boolean } {
   assertActiveUser(userId);
   const membership = db
     .prepare("SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?")
     .get(conversationId, userId);
-  if (!membership) return [];
+  if (!membership) return { messages: [], hasMore: false };
 
   db.prepare("UPDATE conversation_members SET unread_count = 0 WHERE conversation_id = ? AND user_id = ?").run(conversationId, userId);
 
-  return db
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const rows = db
     .prepare(`
-      SELECT messages.*, users.nickname AS sender_nickname, COALESCE(staff_avatar.avatar_url, users.avatar_url) AS sender_avatar_url
-      FROM messages
-      JOIN users ON users.id = messages.sender_id
-      LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
-      WHERE messages.conversation_id = ?
-      ORDER BY datetime(messages.created_at) ASC, messages.id ASC
+      SELECT *
+      FROM (
+        SELECT messages.*, users.nickname AS sender_nickname, COALESCE(staff_avatar.avatar_url, users.avatar_url) AS sender_avatar_url
+        FROM messages
+        JOIN users ON users.id = messages.sender_id
+        LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
+        WHERE messages.conversation_id = @conversationId
+          AND (@beforeMessageId IS NULL OR messages.id < @beforeMessageId)
+        ORDER BY datetime(messages.created_at) DESC, messages.id DESC
+        LIMIT @pageSize
+      )
+      ORDER BY datetime(created_at) ASC, id ASC
     `)
-    .all(conversationId) as MessageRow[];
+    .all({
+      conversationId,
+      beforeMessageId: options.beforeMessageId ?? null,
+      pageSize: limit + 1,
+    }) as MessageRow[];
+  const hasMore = rows.length > limit;
+  return { messages: hasMore ? rows.slice(1) : rows, hasMore };
 }
 
 export function getConversationMemberIds(conversationId: number): number[] {

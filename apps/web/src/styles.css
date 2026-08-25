@@ -1274,7 +1274,8 @@ button {
 }
 
 .chat-loading,
-.upload-loading {
+.upload-loading,
+.older-loading {
   position: sticky;
   top: 42%;
   z-index: 4;
@@ -1298,8 +1299,20 @@ button {
   top: 12px;
 }
 
+.older-loading {
+  position: static;
+  min-width: 128px;
+  margin: 0 auto 12px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: none;
+  font-size: 12px;
+}
+
 .chat-loading span,
-.upload-loading span {
+.upload-loading span,
+.older-loading span {
   width: 15px;
   height: 15px;
   border: 2px solid rgba(7, 193, 96, 0.2);
@@ -1309,7 +1322,8 @@ button {
 }
 
 .chat-loading strong,
-.upload-loading strong {
+.upload-loading strong,
+.older-loading strong {
   font-weight: 600;
 }
 
