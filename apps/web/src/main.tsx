@@ -4,6 +4,7 @@ import { io, Socket } from "socket.io-client";
 import {
   Camera,
   Check,
+  Download,
   File as FileIcon,
   FileStack,
   GripVertical,
@@ -1602,6 +1603,25 @@ function App() {
     setActionMenu(null);
   }
 
+  async function saveMedia(media: MediaBody) {
+    try {
+      const response = await fetch(`${API_URL}${media.url}`);
+      if (!response.ok) throw new Error("下载失败");
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = media.name || (media.mimeType.startsWith("video/") ? "video" : "image");
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 800);
+      setNotice("已保存");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "保存失败");
+    }
+  }
+
   function quoteMessageFromMenu() {
     if (!actionMenu) return;
     const message = messages.find((item) => item.id === actionMenu.messageId);
@@ -2142,7 +2162,7 @@ function App() {
                     <strong>{item.sender}</strong>
                     <span>{formatTime(item.createdAt)}</span>
                   </div>
-                  <RecordContent item={item} />
+                  <RecordContent item={item} onOpenMedia={setViewingMedia} />
                 </article>
               ))}
             </div>
@@ -2153,6 +2173,17 @@ function App() {
         <div className="media-viewer" onClick={() => setViewingMedia(null)}>
           <button className="media-viewer-close" onClick={() => setViewingMedia(null)} aria-label="关闭图片视频预览">
             <X size={30} />
+          </button>
+          <button
+            className="media-viewer-save"
+            onClick={(event) => {
+              event.stopPropagation();
+              void saveMedia(viewingMedia);
+            }}
+            aria-label="保存图片视频"
+          >
+            <Download size={18} />
+            <span>保存</span>
           </button>
           {viewingMedia.mimeType.startsWith("video/") ? (
             <video src={`${API_URL}${viewingMedia.url}`} controls autoPlay onClick={(event) => event.stopPropagation()} />
@@ -2416,17 +2447,28 @@ function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: (
   );
 }
 
-function RecordContent({ item }: { item: BundleBody["items"][number] }) {
+function RecordContent({ item, onOpenMedia }: { item: BundleBody["items"][number]; onOpenMedia?: (media: MediaBody) => void }) {
   if (item.type === "image") {
     const media = parseBody<MediaBody>(item.body);
     if (!media) return <p>[图片]</p>;
-    return <img className="record-media" src={`${API_URL}${media.url}`} alt={media.name} />;
+    return (
+      <button className="record-media-button" type="button" onClick={() => onOpenMedia?.(media)} aria-label="打开图片">
+        <img className="record-media" src={`${API_URL}${media.url}`} alt={media.name} />
+      </button>
+    );
   }
 
   if (item.type === "video") {
     const media = parseBody<MediaBody>(item.body);
     if (!media) return <p>[视频]</p>;
-    return <video className="record-media" src={`${API_URL}${media.url}`} controls preload="metadata" />;
+    return (
+      <button className="record-media-button" type="button" onClick={() => onOpenMedia?.(media)} aria-label="打开视频">
+        <video className="record-media" src={`${API_URL}${media.url}`} muted playsInline preload="metadata" />
+        <span className="record-video-play">
+          <Play size={22} fill="currentColor" />
+        </span>
+      </button>
+    );
   }
 
   if (item.type === "forward_bundle") {
