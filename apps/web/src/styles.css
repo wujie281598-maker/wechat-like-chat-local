@@ -397,7 +397,7 @@ button {
 }
 
 .service-form {
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
 }
 
 .admin-switch {
@@ -526,8 +526,8 @@ button {
 
 .simple-staff-table .admin-table-head,
 .simple-staff-table .admin-table-row {
-  min-width: 900px;
-  grid-template-columns: 56px minmax(140px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr) 130px 70px 190px;
+  min-width: 760px;
+  grid-template-columns: 56px minmax(140px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr) 70px 190px;
 }
 
 .admin-avatar-picker {

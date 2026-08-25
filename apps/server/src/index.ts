@@ -25,6 +25,7 @@ import {
   getAdminSettings,
   getAllUsers,
   getAssignedServiceChatUserId,
+  getConversationMemberIds,
   getConversations,
   getInviteLinkByCode,
   getMessagesByIds,
@@ -98,6 +99,13 @@ app.get("/health", (_request, response) => {
   response.json({ ok: true });
 });
 
+function emitNewMessage(message: ReturnType<typeof createMessage>) {
+  for (const userId of getConversationMemberIds(message.conversation_id)) {
+    io.to(`user:${userId}`).emit("message:new", message);
+  }
+  io.emit("conversation:changed", { conversationId: message.conversation_id });
+}
+
 app.post("/api/login", (request, response) => {
   const parsed = z.object({ phone: phoneSchema, inviteCode: z.string().trim().max(40).optional() }).safeParse(request.body);
   if (!parsed.success) {
@@ -145,8 +153,7 @@ app.post("/api/login", (request, response) => {
         body,
         clientId: `${senderUser.id}-auto-${Date.now()}-${crypto.randomUUID()}`,
       });
-      io.to(`conversation:${conversationId}`).emit("message:new", message);
-      io.emit("conversation:changed", { conversationId });
+      emitNewMessage(message);
     } catch {
       // Auto reply should never block login.
     }
@@ -247,7 +254,6 @@ app.post("/api/admin/staff", (request, response) => {
       displayName: z.string().trim().min(1).max(30),
       role: z.literal("service"),
       parentId: z.number().optional().nullable(),
-      customerPrefix: z.string().trim().max(12).optional().nullable(),
     })
     .safeParse(request.body);
   if (!parsed.success) {
@@ -589,8 +595,7 @@ app.post("/api/conversations/:id/messages", (request, response) => {
       body: parsed.data.body,
       clientId: parsed.data.clientId,
     });
-    io.to(`conversation:${conversationId}`).emit("message:new", message);
-    io.emit("conversation:changed", { conversationId });
+    emitNewMessage(message);
     response.json({ message });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "发送失败" });
@@ -708,8 +713,7 @@ app.post("/api/conversations/:id/uploads", upload.single("file"), (request, resp
       body,
       clientId: `${userId}-${Date.now()}-${crypto.randomUUID()}`,
     });
-    io.to(`conversation:${conversationId}`).emit("message:new", message);
-    io.emit("conversation:changed", { conversationId });
+    emitNewMessage(message);
     response.json({ message });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "上传失败" });
@@ -789,8 +793,8 @@ app.post("/api/conversations/:id/forward", (request, response) => {
       }));
     }
 
-    io.to(`conversation:${targetConversationId}`).emit("message:new", created.at(-1));
-    io.emit("conversation:changed", { conversationId: targetConversationId });
+    const latestMessage = created.at(-1);
+    if (latestMessage) emitNewMessage(latestMessage);
     response.json({ messages: created });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "转发失败" });

@@ -76,9 +76,7 @@ db.exec(`
     status TEXT NOT NULL DEFAULT 'active',
     parent_id INTEGER,
     chat_user_id INTEGER,
-    customer_prefix TEXT,
     avatar_url TEXT,
-    next_customer_sequence INTEGER NOT NULL DEFAULT 1,
     deleted_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -148,19 +146,12 @@ if (!userColumnNames.has("deleted_at")) {
 
 const staffColumns = db.prepare("PRAGMA table_info(staff_accounts)").all() as Array<{ name: string }>;
 const staffColumnNames = new Set(staffColumns.map((column) => column.name));
-if (!staffColumnNames.has("customer_prefix")) {
-  db.prepare("ALTER TABLE staff_accounts ADD COLUMN customer_prefix TEXT").run();
-}
-if (!staffColumnNames.has("next_customer_sequence")) {
-  db.prepare("ALTER TABLE staff_accounts ADD COLUMN next_customer_sequence INTEGER NOT NULL DEFAULT 1").run();
-}
 if (!staffColumnNames.has("deleted_at")) {
   db.prepare("ALTER TABLE staff_accounts ADD COLUMN deleted_at TEXT").run();
 }
 if (!staffColumnNames.has("avatar_url")) {
   db.prepare("ALTER TABLE staff_accounts ADD COLUMN avatar_url TEXT").run();
 }
-db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_customer_prefix ON staff_accounts(customer_prefix) WHERE customer_prefix IS NOT NULL").run();
 
 const inviteColumns = db.prepare("PRAGMA table_info(invite_links)").all() as Array<{ name: string }>;
 const inviteColumnNames = new Set(inviteColumns.map((column) => column.name));
@@ -242,9 +233,7 @@ export type StaffRow = {
   status: string;
   parent_id: number | null;
   chat_user_id: number | null;
-  customer_prefix: string | null;
   avatar_url: string | null;
-  next_customer_sequence: number;
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
@@ -554,9 +543,7 @@ function staffSelectSql() {
       staff_accounts.status,
       staff_accounts.parent_id,
       staff_accounts.chat_user_id,
-      staff_accounts.customer_prefix,
       staff_accounts.avatar_url,
-      staff_accounts.next_customer_sequence,
       staff_accounts.deleted_at,
       staff_accounts.created_at,
       staff_accounts.updated_at,
@@ -614,13 +601,8 @@ export function createStaffAccount(input: {
   displayName: string;
   role: "service";
   parentId?: number | null;
-  customerPrefix?: string | null;
 }) {
   const actor = assertStaffAccess(input.actorId, ["super_admin"]);
-  const customerPrefix = input.customerPrefix?.trim().toLowerCase() ?? "";
-  if (!customerPrefix) throw new Error("客服必须设置客户编号前缀");
-  const duplicate = db.prepare("SELECT 1 FROM staff_accounts WHERE customer_prefix = ? AND deleted_at IS NULL").get(customerPrefix);
-  if (duplicate) throw new Error("客户编号前缀已存在");
 
   const create = db.transaction(() => {
     let chatUserId: number | null = null;
@@ -634,10 +616,10 @@ export function createStaffAccount(input: {
 
     const staff = db
       .prepare(`
-        INSERT INTO staff_accounts (username, password, display_name, role, parent_id, chat_user_id, customer_prefix)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO staff_accounts (username, password, display_name, role, parent_id, chat_user_id)
+        VALUES (?, ?, ?, ?, ?, ?)
       `)
-      .run(input.username, input.password, input.displayName, "service", actor.id, chatUserId, customerPrefix);
+      .run(input.username, input.password, input.displayName, "service", actor.id, chatUserId);
 
     return Number(staff.lastInsertRowid);
   });
@@ -1161,6 +1143,13 @@ export function getMessages(conversationId: number, userId: number): MessageRow[
       ORDER BY datetime(messages.created_at) ASC, messages.id ASC
     `)
     .all(conversationId) as MessageRow[];
+}
+
+export function getConversationMemberIds(conversationId: number): number[] {
+  const rows = db
+    .prepare("SELECT user_id FROM conversation_members WHERE conversation_id = ?")
+    .all(conversationId) as Array<{ user_id: number }>;
+  return rows.map((row) => row.user_id);
 }
 
 export function createMessage(input: NewMessageInput): MessageRow {

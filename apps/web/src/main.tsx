@@ -159,8 +159,6 @@ type StaffAccount = {
   status: string;
   parent_id: number | null;
   chat_user_id: number | null;
-  customer_prefix: string | null;
-  next_customer_sequence: number;
   created_at: string;
   updated_at: string;
   parent_name: string | null;
@@ -367,7 +365,7 @@ function AdminApp() {
   const [activeAdminPage, setActiveAdminPage] = useState<AdminPage>("staff");
   const [customerPage, setCustomerPage] = useState(1);
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<number[]>([]);
-  const [staffForm, setStaffForm] = useState({ username: "", password: "", displayName: "", customerPrefix: "" });
+  const [staffForm, setStaffForm] = useState({ username: "", password: "", displayName: "" });
   const [linkForm, setLinkForm] = useState({ title: "", ownerStaffId: "", autoReplyEnabled: true, autoReplyText: "{nickname} 你好抖音评论 0.3元一条有效评论，没有数量限制。24小时都可以发 当天晚上10点前统一结算。" });
   const staffAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const staffAvatarTargetRef = useRef<number | null>(null);
@@ -440,10 +438,9 @@ function AdminApp() {
           password: staffForm.password,
           displayName: staffForm.displayName.trim(),
           role: "service",
-          customerPrefix: staffForm.customerPrefix.trim(),
         }),
       });
-      setStaffForm({ username: "", password: "", displayName: "", customerPrefix: "" });
+      setStaffForm({ username: "", password: "", displayName: "" });
       await loadOverview();
     } catch (requestError) {
       showError(requestError instanceof Error ? requestError.message : "创建失败");
@@ -681,7 +678,6 @@ function AdminApp() {
           <form className="admin-form-grid service-form" onSubmit={createStaff}>
             <input value={staffForm.displayName} onChange={(event) => setStaffForm((form) => ({ ...form, displayName: event.target.value }))} placeholder="客服名称" />
             <input value={staffForm.username} onChange={(event) => setStaffForm((form) => ({ ...form, username: event.target.value }))} placeholder="登录账号" />
-            <input value={staffForm.customerPrefix} onChange={(event) => setStaffForm((form) => ({ ...form, customerPrefix: event.target.value }))} placeholder="客户编号前缀" />
             <input type="password" value={staffForm.password} onChange={(event) => setStaffForm((form) => ({ ...form, password: event.target.value }))} placeholder="初始密码" autoComplete="new-password" />
             <button className="admin-primary" type="submit">添加客服</button>
           </form>
@@ -698,7 +694,7 @@ function AdminApp() {
             }}
           />
           <div className="admin-table staff-table simple-staff-table">
-            <div className="admin-table-head"><span>头像</span><span>客服名称</span><span>账号</span><span>聊天显示</span><span>客户编号</span><span>状态</span><span>操作</span></div>
+            <div className="admin-table-head"><span>头像</span><span>客服名称</span><span>账号</span><span>聊天显示</span><span>状态</span><span>操作</span></div>
             {serviceAccounts.map((item) => (
               <div className="admin-table-row" key={item.id}>
                 <button
@@ -716,7 +712,6 @@ function AdminApp() {
                 <strong>{item.display_name}</strong>
                 <span>{item.username}</span>
                 <span>{item.display_name}</span>
-                <span>客户随机字母昵称</span>
                 <span className={item.status === "active" ? "status-active" : "status-disabled"}>{item.status === "active" ? "启用" : "禁用"}</span>
                 <div className="row-actions staff-row-actions">
                   <button onClick={() => {
@@ -791,9 +786,9 @@ function AdminApp() {
           <header>
             <div>
               <strong>客户</strong>
-              <span>查看客户编号、手机号、状态和最近在线。</span>
+              <span>查看客户昵称、手机号、状态和最近在线。</span>
             </div>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索编号 / 手机号 / 状态" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索昵称 / 手机号 / 状态" />
           </header>
           {selectedCustomerIds.length > 0 ? (
             <div className="bulk-action-bar">
@@ -809,7 +804,7 @@ function AdminApp() {
               <label className="admin-check-cell">
                 <input type="checkbox" checked={allPagedUsersSelected} onChange={togglePagedCustomerSelection} disabled={selectablePagedUsers.length === 0} />
               </label>
-              <span>编号</span><span>手机号</span><span>状态</span><span>最近在线</span><span>操作</span>
+              <span>昵称</span><span>手机号</span><span>状态</span><span>最近在线</span><span>操作</span>
             </div>
             {pagedUsers.map((user) => (
               <div className="admin-table-row" key={user.id}>
@@ -933,6 +928,14 @@ function App() {
   }, [currentUser]);
 
   useEffect(() => {
+    const unreadTotal = conversations.reduce((sum, conversation) => sum + conversation.unread_count, 0);
+    document.title = unreadTotal > 0 ? `【您有${unreadTotal}条新消息】` : "抖抖IM";
+    return () => {
+      document.title = "抖抖IM";
+    };
+  }, [conversations]);
+
+  useEffect(() => {
     if (!pendingConversationId || !currentUser) return;
     const nextConversationId = pendingConversationId;
     setPendingConversationId(null);
@@ -982,6 +985,9 @@ function App() {
     sessionBlockedRef.current = false;
     const nextSocket = io(API_URL);
     nextSocket.emit("user:online", currentUser.id);
+    nextSocket.on("connect", () => {
+      nextSocket.emit("user:online", currentUser.id);
+    });
     nextSocket.on("message:new", (message: ChatMessage) => {
       if (message.conversation_id === activeConversationIdRef.current) {
         void loadMessages(message.conversation_id).catch(handleSessionError);
