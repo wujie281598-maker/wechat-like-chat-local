@@ -854,16 +854,22 @@ button {
   transition: transform 0.18s ease, background 0.16s ease;
 }
 
-.list-row:hover,
+.list-row:hover {
+  background: #f2f4f5;
+}
+
 .list-row.selected {
-  background: #e7ecef;
+  background: #dfe6eb;
 }
 
 .conversation-row.pinned {
   background: #e8edf1;
 }
 
-.conversation-row.pinned:hover,
+.conversation-row.pinned:hover {
+  background: #e3e9ed;
+}
+
 .conversation-row.pinned.selected {
   background: #dfe6eb;
 }
@@ -1173,6 +1179,43 @@ button {
   background: var(--bubble);
 }
 
+.quote-text-bubble {
+  min-width: 180px;
+  display: grid;
+  gap: 8px;
+}
+
+.quote-text-bubble p {
+  margin: 0;
+}
+
+.quoted-message {
+  display: grid;
+  gap: 2px;
+  padding: 7px 9px;
+  border-left: 3px solid rgba(99, 110, 119, 0.32);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.055);
+}
+
+.quoted-message strong {
+  color: #53606a;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.quoted-message span {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: #6f7a83;
+  font-size: 12px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  word-break: break-word;
+}
+
 .bubble-button {
   border: 0;
   padding: 0;
@@ -1321,6 +1364,56 @@ button {
   flex: 0 0 auto;
 }
 
+.quote-composer-preview {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f8f9;
+}
+
+.quote-composer-preview div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.quote-composer-preview strong,
+.quote-composer-preview span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-composer-preview strong {
+  color: #3d4952;
+  font-size: 12px;
+}
+
+.quote-composer-preview span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.quote-composer-preview button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.quote-composer-preview button:hover {
+  color: var(--danger);
+  background: white;
+}
+
 .composer.has-quick {
   grid-template-columns: 1fr 44px 74px 44px;
 }
@@ -1349,6 +1442,11 @@ button {
   flex: 0 0 auto;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+}
+
+.composer .quote-composer-preview button {
+  width: 30px;
+  height: 30px;
 }
 
 .send-button {
@@ -2208,9 +2306,12 @@ button {
     padding: 12px 14px;
   }
 
-  .list-row:hover,
+  .list-row:hover {
+    background: #f5f6f7;
+  }
+
   .list-row.selected {
-    background: white;
+    background: #e1e7eb;
   }
 
   .conversation-swipe.revealed .conversation-row {

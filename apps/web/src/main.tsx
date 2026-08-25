@@ -134,6 +134,15 @@ type BundleBody = {
   }>;
 };
 
+type QuoteBody = {
+  text: string;
+  quote: {
+    messageId: number;
+    sender: string;
+    preview: string;
+  };
+};
+
 type QuickReply = {
   id: number;
   staff_id: number;
@@ -249,7 +258,17 @@ function messagePreview(message: ChatMessage) {
   if (message.type === "image") return "[图片]";
   if (message.type === "video") return "[视频]";
   if (message.type === "forward_bundle") return "[聊天记录]";
-  return message.body;
+  const quoteBody = parseBody<QuoteBody>(message.body);
+  return quoteBody?.quote ? quoteBody.text : message.body;
+}
+
+function quotePreviewForMessage(message: ChatMessage) {
+  if (message.revoked_at) return "[撤回了一条消息]";
+  if (message.type === "image") return "[图片]";
+  if (message.type === "video") return "[视频]";
+  if (message.type === "forward_bundle") return "[聊天记录]";
+  const quoteBody = parseBody<QuoteBody>(message.body);
+  return (quoteBody?.quote ? quoteBody.text : message.body).slice(0, 80);
 }
 
 function formatDuration(seconds: number | null) {
@@ -877,6 +896,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [draft, setDraft] = useState("");
+  const [quoteTarget, setQuoteTarget] = useState<QuoteBody["quote"] | null>(null);
   const [query, setQuery] = useState("");
   const [selectedMessageIds, setSelectedMessageIds] = useState<number[]>([]);
   const [forwardMode, setForwardMode] = useState<ForwardMode | null>(null);
@@ -1125,13 +1145,14 @@ function App() {
     }
     const body = inputValue.trim();
     setDraft("");
+    setQuoteTarget(null);
     sendingRef.current = true;
     try {
       await api<{ message: ChatMessage }>(`/api/conversations/${activeConversationIdValue}/messages`, {
         method: "POST",
         body: JSON.stringify({
           userId: currentUserValue.id,
-          body,
+          body: quoteTarget ? JSON.stringify({ text: body, quote: quoteTarget } satisfies QuoteBody) : body,
           clientId: makeClientId(currentUserValue.id),
         }),
       });
@@ -1139,6 +1160,7 @@ function App() {
     } catch (error) {
       setNotice(error instanceof Error ? `发送失败：${error.message}` : "发送失败");
       setDraft(body);
+      setQuoteTarget(quoteTarget);
     } finally {
       sendingRef.current = false;
     }
@@ -1532,7 +1554,7 @@ function App() {
 
   function openActionMenu(messageId: number, x: number, y: number) {
     setToolPanelOpen(false);
-    const menuWidth = Math.min(324, window.innerWidth - 24);
+    const menuWidth = Math.min(382, window.innerWidth - 24);
     const menuHeight = 48;
     const margin = 12;
     setActionMenu({
@@ -1578,6 +1600,21 @@ function App() {
     setSelectedMessageIds([actionMenu.messageId]);
     setNotice(mode === "bundle" ? "已进入多选，选完后点合并转发" : "已进入多选，选完后点逐条转发");
     setActionMenu(null);
+  }
+
+  function quoteMessageFromMenu() {
+    if (!actionMenu) return;
+    const message = messages.find((item) => item.id === actionMenu.messageId);
+    if (!message || message.revoked_at) return;
+    setQuoteTarget({
+      messageId: message.id,
+      sender: message.sender_nickname,
+      preview: quotePreviewForMessage(message),
+    });
+    setActionMenu(null);
+    setSelectedMessageIds([]);
+    setToolPanelOpen(false);
+    window.setTimeout(() => composerInputRef.current?.focus(), 0);
   }
 
   function reEditMessage(messageId: number) {
@@ -1900,6 +1937,17 @@ function App() {
               <div ref={bottomRef} />
             </div>
             <div className={`composer ${isStaffUser ? "has-quick" : ""}`}>
+              {quoteTarget ? (
+                <div className="quote-composer-preview">
+                  <div>
+                    <strong>{quoteTarget.sender}</strong>
+                    <span>{quoteTarget.preview}</span>
+                  </div>
+                  <button type="button" onClick={() => setQuoteTarget(null)} aria-label="取消引用">
+                    <X size={16} />
+                  </button>
+                </div>
+              ) : null}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -2123,6 +2171,7 @@ function App() {
             {messages.find((message) => message.id === actionMenu.messageId)?.sender_id === currentUser.id ? (
               <button onClick={() => void recallSelectedMessage()}>撤回</button>
             ) : null}
+            <button onClick={quoteMessageFromMenu}>引用</button>
             <button onClick={() => startForwardFromMenu("separate")}>逐条转发</button>
             <button onClick={() => startForwardFromMenu("bundle")}>合并转发</button>
             <button
@@ -2289,6 +2338,19 @@ function MessageBubble({ message, onMediaLoad }: { message: ChatMessage; onMedia
     );
   }
 
+  const quoteBody = parseBody<QuoteBody>(message.body);
+  if (quoteBody?.quote) {
+    return (
+      <div className="bubble quote-text-bubble">
+        <div className="quoted-message">
+          <strong>{quoteBody.quote.sender}</strong>
+          <span>{quoteBody.quote.preview}</span>
+        </div>
+        <p>{quoteBody.text}</p>
+      </div>
+    );
+  }
+
   return <p className="bubble">{message.body}</p>;
 }
 
@@ -2386,6 +2448,8 @@ function formatConversationPreview(conversation: Conversation) {
     return conversation.last_message_body.includes('"mimeType":"video/') ? "[视频]" : "[图片]";
   }
   if (conversation.last_message_body.startsWith('{"title":"聊天记录"')) return "[聊天记录]";
+  const quoteBody = parseBody<QuoteBody>(conversation.last_message_body);
+  if (quoteBody?.quote) return quoteBody.text;
   return conversation.last_message_body;
 }
 
