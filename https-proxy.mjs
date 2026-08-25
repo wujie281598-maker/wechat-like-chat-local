@@ -1,0 +1,150 @@
+// HTTPS 反向代理 + 静态文件服务
+// 可通过环境变量配置：
+//   PROXY_PORT    - 监听端口，默认 8443
+//   BACKEND_URL   - 后端地址，默认 http://127.0.0.1:4000
+//   DIST_DIR      - 前端静态文件目录，默认 apps/web/dist
+//   SSL_KEY_PATH  - SSL 私钥路径，默认 /opt/realtime-chat/cert/youshen.top.key
+//   SSL_CERT_PATH - SSL 证书路径，默认 /opt/realtime-chat/cert/youshen.top_bundle.crt
+import https from "node:https";
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const PORT = Number(process.env.PROXY_PORT ?? 8443);
+const BACKEND = process.env.BACKEND_URL ?? "http://127.0.0.1:4000";
+const DIST_DIR = process.env.DIST_DIR
+  ? path.resolve(process.env.DIST_DIR)
+  : path.join(__dirname, "apps/web/dist");
+
+const backendUrl = new URL(BACKEND);
+const BACKEND_HOST = backendUrl.hostname;
+const BACKEND_PORT = Number(backendUrl.port);
+
+const SSL_KEY_PATH = process.env.SSL_KEY_PATH ?? "/opt/realtime-chat/cert/youshen.top.key";
+const SSL_CERT_PATH = process.env.SSL_CERT_PATH ?? "/opt/realtime-chat/cert/youshen.top_bundle.crt";
+
+const options = {
+  key: fs.readFileSync(SSL_KEY_PATH),
+  cert: fs.readFileSync(SSL_CERT_PATH),
+};
+
+// MIME 类型
+const mimeTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".webp": "image/webp",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".map": "application/json",
+};
+
+// 代理请求到后端
+function proxyRequest(req, res) {
+  const url = new URL(req.url, BACKEND);
+  const proxyReq = http.request(
+    {
+      hostname: BACKEND_HOST,
+      port: BACKEND_PORT,
+      path: url.pathname + url.search,
+      method: req.method,
+      headers: { ...req.headers, host: `${BACKEND_HOST}:${BACKEND_PORT}` },
+    },
+    (proxyRes) => {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res);
+    }
+  );
+  proxyReq.on("error", (err) => {
+    console.error("Proxy error:", err.message);
+    res.writeHead(502, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "后端服务不可用" }));
+  });
+  req.pipe(proxyReq);
+}
+
+// 服务静态文件
+function serveStatic(req, res) {
+  let filePath = path.join(DIST_DIR, req.url === "/" ? "index.html" : req.url);
+  // 安全检查：防止路径遍历
+  if (!filePath.startsWith(DIST_DIR)) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return;
+  }
+  fs.stat(filePath, (err, stats) => {
+    if (err || !stats.isFile()) {
+      // SPA 路由回退到 index.html
+      filePath = path.join(DIST_DIR, "index.html");
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = mimeTypes[ext] || "application/octet-stream";
+    fs.readFile(filePath, (err, data) => {
+      if (err) {
+        res.writeHead(404);
+        res.end("Not Found");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": contentType });
+      res.end(data);
+    });
+  });
+}
+
+const server = https.createServer(options, (req, res) => {
+  // API、上传、Socket.IO 轮询请求代理到后端
+  if (
+    req.url.startsWith("/api/") ||
+    req.url.startsWith("/uploads/") ||
+    req.url.startsWith("/socket.io/") ||
+    req.url === "/health"
+  ) {
+    proxyRequest(req, res);
+  } else {
+    serveStatic(req, res);
+  }
+});
+
+// WebSocket 升级（Socket.IO）
+server.on("upgrade", (req, socket, head) => {
+  if (req.url.startsWith("/socket.io/")) {
+    const proxyReq = http.request({
+      hostname: BACKEND_HOST,
+      port: BACKEND_PORT,
+      path: req.url,
+      method: req.method,
+      headers: req.headers,
+    });
+    proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+      socket.write("HTTP/1.1 101 Switching Protocols\r\n");
+      Object.entries(proxyRes.headers).forEach(([key, value]) => {
+        socket.write(`${key}: ${value}\r\n`);
+      });
+      socket.write("\r\n");
+      if (proxyHead.length > 0) socket.write(proxyHead);
+      proxySocket.pipe(socket);
+      socket.pipe(proxySocket);
+    });
+    proxyReq.on("error", () => socket.destroy());
+    if (head.length > 0) proxyReq.write(head);
+    proxyReq.end();
+  }
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`HTTPS proxy running at https://0.0.0.0:${PORT}`);
+  console.log(`Backend: ${BACKEND}`);
+  console.log(`Static files: ${DIST_DIR}`);
+  console.log(`SSL key: ${SSL_KEY_PATH}`);
+  console.log(`SSL cert: ${SSL_CERT_PATH}`);
+});

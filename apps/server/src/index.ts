@@ -163,75 +163,89 @@ async function transcodeVideoForChat(file: Express.Multer.File) {
   const mp4Path = join(uploadDir, mp4Name);
   const posterPath = join(uploadDir, posterName);
 
-  const commonArgs = [
-    "-y",
-    "-i",
-    sourcePath,
-    "-vf",
-    "scale='min(720,iw)':-2",
-    "-pix_fmt",
-    "yuv420p",
-    "-movflags",
-    "+faststart",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "128k",
-    "-max_muxing_queue_size",
-    "1024",
-  ];
-
+  // 先用 ffprobe 检测视频编码，已是 h264 就直接复制流，不需要编码器
+  let isH264 = false;
   try {
-    await runFfmpeg([
-      ...commonArgs,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-profile:v",
-      "baseline",
-      "-level",
-      "3.1",
-      mp4Path,
-    ]);
-  } catch (error) {
-    await fs.unlink(mp4Path).catch(() => undefined);
-    const sanitized = sanitizeFfmpegError(error);
-    if (sanitized !== "服务器视频编码器不可用") throw new Error(sanitized);
-    await runFfmpeg([
-      ...commonArgs,
-      "-c:v",
-      "h264",
-      mp4Path,
-    ]).catch((fallbackError) => {
-      throw new Error(sanitizeFfmpegError(fallbackError));
+    const probeResult = await new Promise<string>((resolve, reject) => {
+      const child = spawn("ffprobe", [
+        "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        sourcePath,
+      ]);
+      let out = "";
+      child.stdout.on("data", (c) => (out += c.toString()));
+      child.on("error", reject);
+      child.on("close", () => resolve(out.trim()));
     });
+    isH264 = probeResult === "h264";
+  } catch {
+    // ffprobe 失败则按非 h264 处理
   }
 
-  await runFfmpeg([
-    "-y",
-    "-ss",
-    "00:00:00.2",
-    "-i",
-    mp4Path,
-    "-frames:v",
-    "1",
-    "-vf",
-    "scale='min(720,iw)':-2",
-    "-q:v",
-    "4",
-    posterPath,
-  ]).catch(() => undefined);
+  let transcodeOk = false;
+  if (isH264) {
+    // 已是 h264，直接复制流，速度极快，不依赖编码器
+    try {
+      await runFfmpeg([
+        "-y", "-i", sourcePath,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        "-max_muxing_queue_size", "1024",
+        mp4Path,
+      ]);
+      transcodeOk = true;
+    } catch {
+      // copy 失败则继续尝试转码
+    }
+  }
 
-  const output = await fs.stat(mp4Path);
-  if (sourcePath !== mp4Path) {
-    await fs.unlink(sourcePath).catch(() => undefined);
+  if (!transcodeOk) {
+    // 非 h264 或 copy 失败，尝试转码
+    const commonArgs = [
+      "-y", "-i", sourcePath,
+      "-vf", "scale='min(720,iw)':-2",
+      "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart",
+      "-c:a", "aac", "-b:a", "128k",
+      "-max_muxing_queue_size", "1024",
+    ];
+    try {
+      await runFfmpeg([...commonArgs, "-c:v", "libx264", "-preset", "veryfast", mp4Path]);
+      transcodeOk = true;
+    } catch {
+      try {
+        // libx264 不可用，尝试 libopenh264
+        await runFfmpeg([...commonArgs, "-c:v", "libopenh264", "-qp", "23", mp4Path]);
+        transcodeOk = true;
+      } catch {
+        // 所有编码器都不可用，直接用原文件
+        console.warn("视频转码失败，使用原文件");
+      }
+    }
+  }
+
+  const finalMp4Path = transcodeOk ? mp4Path : sourcePath;
+  const finalMp4Name = transcodeOk ? mp4Name : file.filename;
+
+  // 提取缩略图
+  let posterOk = false;
+  try {
+    await runFfmpeg([
+      "-y", "-ss", "00:00:00.2", "-i", finalMp4Path,
+      "-frames:v", "1", "-vf", "scale='min(720,iw)':-2",
+      "-q:v", "3", posterPath,
+    ]);
+    posterOk = true;
+  } catch {
+    // 缩略图失败不影响主流程
   }
 
   return {
-    url: `/uploads/${mp4Name}`,
-    posterUrl: existsSync(posterPath) ? `/uploads/${posterName}` : null,
-    size: output.size,
+    mp4Path: finalMp4Path,
+    mp4Name: finalMp4Name,
+    posterPath: posterOk ? posterPath : null,
+    posterName: posterOk ? posterName : null,
   };
 }
 
