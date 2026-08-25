@@ -850,6 +850,32 @@ export function setInviteLinkStatus(actorId: number, linkId: number, status: "ac
   db.prepare("UPDATE invite_links SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, linkId);
 }
 
+export function updateInviteLink(input: {
+  actorId: number;
+  linkId: number;
+  title: string;
+  ownerStaffId: number;
+  autoReplyEnabled: boolean;
+  autoReplyText: string;
+}) {
+  const actor = assertStaffAccess(input.actorId, ["super_admin", "service"]);
+  const link = db.prepare("SELECT * FROM invite_links WHERE id = ? AND deleted_at IS NULL").get(input.linkId) as InviteLinkRow | undefined;
+  if (!link) throw new Error("链接不存在");
+  const currentOwner = getStaffById(link.owner_staff_id);
+  if (actor.role === "service" && (!currentOwner || currentOwner.id !== actor.id)) throw new Error("没有权限");
+  const nextOwner = getStaffById(input.ownerStaffId);
+  if (!nextOwner || nextOwner.role !== "service" || nextOwner.status !== "active") throw new Error("链接必须绑定启用中的客服");
+  if (actor.role === "service" && nextOwner.id !== actor.id) throw new Error("客服只能绑定自己的链接");
+  db
+    .prepare(`
+      UPDATE invite_links
+      SET title = ?, owner_staff_id = ?, auto_reply_enabled = ?, auto_reply_text = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `)
+    .run(input.title, nextOwner.id, input.autoReplyEnabled ? 1 : 0, input.autoReplyText, input.linkId);
+  return getVisibleInviteLinks(actor.id).find((item) => item.id === input.linkId)!;
+}
+
 export function deleteInviteLink(actorId: number, linkId: number) {
   const actor = assertStaffAccess(actorId, ["super_admin", "service"]);
   const link = db.prepare("SELECT * FROM invite_links WHERE id = ? AND deleted_at IS NULL").get(linkId) as InviteLinkRow | undefined;

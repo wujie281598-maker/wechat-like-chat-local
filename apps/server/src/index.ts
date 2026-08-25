@@ -43,6 +43,7 @@ import {
   getUsers,
   getDirectConversationPeerId,
   updateCustomerRemark,
+  updateInviteLink,
   updateQuickReply,
   updateStaffAvatar,
   recallMessage,
@@ -352,6 +353,29 @@ app.post("/api/admin/invite-links", (request, response) => {
     response.json({ inviteLink: createInviteLink({ actorId: actor.id, ...parsed.data }) });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "创建失败" });
+  }
+});
+
+app.patch("/api/admin/invite-links/:id", (request, response) => {
+  const actor = requireStaff(request, response, ["super_admin", "service"]);
+  if (!actor) return;
+  const linkId = Number(request.params.id);
+  const parsed = z
+    .object({
+      title: z.string().trim().min(1).max(50),
+      ownerStaffId: z.number(),
+      autoReplyEnabled: z.boolean(),
+      autoReplyText: z.string().trim().min(1).max(1000),
+    })
+    .safeParse(request.body);
+  if (!linkId || !parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  try {
+    response.json({ inviteLink: updateInviteLink({ actorId: actor.id, linkId, ...parsed.data }) });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "修改失败" });
   }
 });
 

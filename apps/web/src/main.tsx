@@ -400,6 +400,7 @@ function AdminApp() {
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<number[]>([]);
   const [staffForm, setStaffForm] = useState({ username: "", password: "", displayName: "" });
   const [linkForm, setLinkForm] = useState({ title: "", ownerStaffId: "", autoReplyEnabled: true, autoReplyText: "{nickname} 你好抖音评论 0.3元一条有效评论，没有数量限制。24小时都可以发 当天晚上10点前统一结算。" });
+  const [editingLinkId, setEditingLinkId] = useState<number | null>(null);
   const staffAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const staffAvatarTargetRef = useRef<number | null>(null);
 
@@ -528,24 +529,42 @@ function AdminApp() {
     }
   }
 
-  async function createLink(event: React.FormEvent) {
+  async function saveLink(event: React.FormEvent) {
     event.preventDefault();
     setError("");
     try {
-      await adminApi<{ inviteLink: InviteLink }>("/api/admin/invite-links", token, {
-        method: "POST",
-        body: JSON.stringify({
-          title: linkForm.title.trim(),
-          ownerStaffId: Number(linkForm.ownerStaffId),
-          autoReplyEnabled: linkForm.autoReplyEnabled,
-          autoReplyText: linkForm.autoReplyText,
-        }),
+      const payload = {
+        title: linkForm.title.trim(),
+        ownerStaffId: Number(linkForm.ownerStaffId),
+        autoReplyEnabled: linkForm.autoReplyEnabled,
+        autoReplyText: linkForm.autoReplyText,
+      };
+      await adminApi<{ inviteLink: InviteLink }>(editingLinkId ? `/api/admin/invite-links/${editingLinkId}` : "/api/admin/invite-links", token, {
+        method: editingLinkId ? "PATCH" : "POST",
+        body: JSON.stringify(payload),
       });
       setLinkForm((form) => ({ ...form, title: "" }));
+      setEditingLinkId(null);
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "创建失败");
+      showError(requestError instanceof Error ? requestError.message : editingLinkId ? "修改失败" : "创建失败");
     }
+  }
+
+  function startEditLink(link: InviteLink) {
+    setEditingLinkId(link.id);
+    setLinkForm({
+      title: link.title,
+      ownerStaffId: String(link.owner_staff_id),
+      autoReplyEnabled: Boolean(link.auto_reply_enabled),
+      autoReplyText: link.auto_reply_text,
+    });
+    setError("");
+  }
+
+  function cancelEditLink() {
+    setEditingLinkId(null);
+    setLinkForm((form) => ({ ...form, title: "" }));
   }
 
   async function toggleLinkStatus(link: InviteLink) {
@@ -805,7 +824,7 @@ function AdminApp() {
               <span>选择客服生成入口链接，二维码同步显示；客户扫码或点链接后仍填手机号进入。</span>
             </div>
           </header>
-          <form className="admin-form-grid link-form" onSubmit={createLink}>
+          <form className="admin-form-grid link-form" onSubmit={saveLink}>
             <input value={linkForm.title} onChange={(event) => setLinkForm((form) => ({ ...form, title: event.target.value }))} placeholder="链接名称，如 抖音评论" />
             <select value={linkForm.ownerStaffId} onChange={(event) => setLinkForm((form) => ({ ...form, ownerStaffId: event.target.value }))}>
               <option value="">选择客服</option>
@@ -815,7 +834,8 @@ function AdminApp() {
             </select>
             <label className="admin-switch"><input type="checkbox" checked={linkForm.autoReplyEnabled} onChange={(event) => setLinkForm((form) => ({ ...form, autoReplyEnabled: event.target.checked }))} />启用回复</label>
             <textarea value={linkForm.autoReplyText} onChange={(event) => setLinkForm((form) => ({ ...form, autoReplyText: event.target.value }))} />
-            <button className="admin-primary" type="submit">添加链接</button>
+            <button className="admin-primary" type="submit">{editingLinkId ? "保存修改" : "添加链接"}</button>
+            {editingLinkId ? <button className="admin-secondary" type="button" onClick={cancelEditLink}>取消</button> : null}
           </form>
           <div className="admin-link-search">
             <Search size={16} />
@@ -839,6 +859,7 @@ function AdminApp() {
                     <button type="button" onClick={() => void copyInviteLink(link.code)}>复制</button>
                   </div>
                   <div className="row-actions">
+                    <button onClick={() => startEditLink(link)}>修改</button>
                     <button onClick={() => void toggleLinkStatus(link)}>{link.status === "active" ? "停用" : "启用"}</button>
                     <button className="danger-action" onClick={() => void deleteLink(link)}>删除</button>
                   </div>
@@ -972,6 +993,8 @@ function App() {
   const [query, setQuery] = useState("");
   const [selectedMessageIds, setSelectedMessageIds] = useState<number[]>([]);
   const [forwardMode, setForwardMode] = useState<ForwardMode | null>(null);
+  const [forwardTargetIds, setForwardTargetIds] = useState<number[]>([]);
+  const [forwardSending, setForwardSending] = useState(false);
   const [viewingBundle, setViewingBundle] = useState<BundleBody | null>(null);
   const [viewingMedia, setViewingMedia] = useState<MediaBody | null>(null);
   const [actionMenu, setActionMenu] = useState<{ messageId: number; x: number; y: number } | null>(null);
@@ -1017,7 +1040,10 @@ function App() {
   useEffect(() => {
     const updateAppHeight = () => {
       const height = window.visualViewport?.height ?? window.innerHeight;
+      const width = window.visualViewport?.width ?? window.innerWidth;
+      const isTouchDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
       document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+      document.documentElement.classList.toggle("force-mobile-layout", isTouchDevice && width <= 920);
     };
     updateAppHeight();
     window.addEventListener("resize", updateAppHeight);
@@ -1069,6 +1095,7 @@ function App() {
     setConversationMenu(null);
     setSelectedMessageIds([]);
     setForwardMode(null);
+    setForwardTargetIds([]);
     setToolPanelOpen(false);
     setReturnBottomVisible(false);
     setActiveConversationId(conversationId);
@@ -1755,8 +1782,20 @@ function App() {
   function startForwardFromMenu(mode: ForwardMode) {
     if (!actionMenu) return;
     setSelectedMessageIds([actionMenu.messageId]);
+    setForwardTargetIds([]);
     setNotice(mode === "bundle" ? "已进入多选，选完后点合并转发" : "已进入多选，选完后点逐条转发");
     setActionMenu(null);
+  }
+
+  function openForwardModal(mode: ForwardMode) {
+    setForwardMode(mode);
+    setForwardTargetIds([]);
+  }
+
+  function closeForwardModal() {
+    if (forwardSending) return;
+    setForwardMode(null);
+    setForwardTargetIds([]);
   }
 
   async function saveMedia(media: MediaBody) {
@@ -1811,22 +1850,40 @@ function App() {
     longPressTimerRef.current = null;
   }
 
-  async function forwardTo(conversationId: number) {
-    if (!currentUser || !forwardMode || selectedMessageIds.length === 0) return;
-    await api<{ messages: ChatMessage[] }>(`/api/conversations/${conversationId}/forward`, {
-      method: "POST",
-      body: JSON.stringify({
-        userId: currentUser.id,
-        messageIds: selectedMessageIds,
-        mode: forwardMode,
-      }),
-    });
-    setNotice(forwardMode === "bundle" ? "已合并转发" : "已逐条转发");
-    setSelectedMessageIds([]);
-    setForwardMode(null);
-    setActionMenu(null);
-    await loadConversations(currentUser.id);
-    if (conversationId === activeConversationId) await loadMessages(conversationId);
+  function toggleForwardTarget(conversationId: number) {
+    if (forwardSending) return;
+    setForwardTargetIds((ids) => (ids.includes(conversationId) ? ids.filter((id) => id !== conversationId) : [...ids, conversationId]));
+  }
+
+  async function forwardToSelectedTargets() {
+    if (!currentUser || !forwardMode || selectedMessageIds.length === 0 || forwardTargetIds.length === 0 || forwardSending) return;
+    const mode = forwardMode;
+    const targetIds = [...forwardTargetIds];
+    setForwardSending(true);
+    setNotice("正在转发...");
+    try {
+      for (const conversationId of targetIds) {
+        await api<{ messages: ChatMessage[] }>(`/api/conversations/${conversationId}/forward`, {
+          method: "POST",
+          body: JSON.stringify({
+            userId: currentUser.id,
+            messageIds: selectedMessageIds,
+            mode,
+          }),
+        });
+      }
+      setNotice(`${mode === "bundle" ? "已合并转发" : "已逐条转发"}到 ${targetIds.length} 个会话`);
+      setSelectedMessageIds([]);
+      setForwardMode(null);
+      setForwardTargetIds([]);
+      setActionMenu(null);
+      await loadConversations(currentUser.id);
+      if (activeConversationId && targetIds.includes(activeConversationId)) await loadMessages(activeConversationId);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "转发失败");
+    } finally {
+      setForwardSending(false);
+    }
   }
 
   function logout() {
@@ -2012,8 +2069,8 @@ function App() {
             {selectedMessageIds.length > 0 ? (
               <div className="selection-bar">
                 <span>已选 {selectedMessageIds.length} 条</span>
-                <button onClick={() => setForwardMode("separate")}>逐条转发</button>
-                <button onClick={() => setForwardMode("bundle")}>合并转发</button>
+                <button onClick={() => openForwardModal("separate")}>逐条转发</button>
+                <button onClick={() => openForwardModal("bundle")}>合并转发</button>
                 <button className="plain-icon" onClick={() => setSelectedMessageIds([])} aria-label="取消多选">
                   <X size={16} />
                 </button>
@@ -2304,18 +2361,39 @@ function App() {
           <section className="forward-modal">
             <header>
               <strong>{forwardMode === "bundle" ? "合并转发到" : "逐条转发到"}</strong>
-              <button className="plain-icon" onClick={() => setForwardMode(null)} aria-label="关闭">
+              <button className="plain-icon" onClick={closeForwardModal} aria-label="关闭" disabled={forwardSending}>
                 <X size={17} />
               </button>
             </header>
             <div className="forward-list">
-              {conversations.map((conversation) => (
-                <button key={conversation.id} onClick={() => void forwardTo(conversation.id)}>
-                  <div className={`avatar small ${avatarRoleClass(conversation.peer_phone)}`} style={avatarStyle(conversation.peer_avatar_url)}>{avatarLabel(conversation.peer_nickname)}</div>
-                  <span>{conversation.peer_nickname ?? "会话"}</span>
-                </button>
-              ))}
+              {conversations.map((conversation) => {
+                const selected = forwardTargetIds.includes(conversation.id);
+                return (
+                  <button
+                    key={conversation.id}
+                    className={selected ? "selected" : ""}
+                    onClick={() => toggleForwardTarget(conversation.id)}
+                    disabled={forwardSending}
+                  >
+                    <span className={`forward-check ${selected ? "selected" : ""}`}>{selected ? <Check size={13} /> : null}</span>
+                    <div className={`avatar small ${avatarRoleClass(conversation.peer_phone)}`} style={avatarStyle(conversation.peer_avatar_url)}>{avatarLabel(conversation.peer_nickname)}</div>
+                    <span>{conversation.peer_nickname ?? "会话"}</span>
+                  </button>
+                );
+              })}
             </div>
+            <footer className="forward-actions">
+              <span>已选 {forwardTargetIds.length} 个</span>
+              <button type="button" onClick={closeForwardModal} disabled={forwardSending}>取消</button>
+              <button
+                type="button"
+                className="forward-send"
+                onClick={() => void forwardToSelectedTargets()}
+                disabled={forwardTargetIds.length === 0 || forwardSending}
+              >
+                {forwardSending ? "发送中..." : "发送"}
+              </button>
+            </footer>
           </section>
         </div>
       ) : null}

@@ -409,13 +409,22 @@ button {
   white-space: nowrap;
 }
 
-.admin-primary {
+.admin-primary,
+.admin-secondary {
   margin-top: 10px;
   padding: 0 16px;
 }
 
 .admin-primary:disabled {
   opacity: 0.55;
+}
+
+.admin-secondary {
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  background: white;
 }
 
 .admin-table {
@@ -2120,6 +2129,7 @@ button {
 }
 
 .forward-list {
+  flex: 1;
   overflow-y: auto;
   padding: 8px;
 }
@@ -2130,7 +2140,7 @@ button {
   border: 0;
   border-radius: 6px;
   display: grid;
-  grid-template-columns: 42px 1fr;
+  grid-template-columns: 24px 42px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   background: transparent;
@@ -2138,8 +2148,65 @@ button {
   padding: 8px;
 }
 
-.forward-list button:hover {
+.forward-list button:hover,
+.forward-list button.selected {
   background: var(--soft);
+}
+
+.forward-list button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.forward-check {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: white;
+  background: white;
+}
+
+.forward-check.selected {
+  border-color: var(--green);
+  background: var(--green);
+}
+
+.forward-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: #fbfbfb;
+}
+
+.forward-actions span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.forward-actions button {
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 14px;
+  background: white;
+}
+
+.forward-actions .forward-send {
+  border-color: var(--green);
+  color: white;
+  background: var(--green);
+}
+
+.forward-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
 }
 
 .toast {
@@ -2406,6 +2473,15 @@ button {
     --composer-height: 86px;
     --tool-panel-height: 252px;
   }
+}
+
+html.force-mobile-layout {
+  --sidebar-width: 0px;
+  --composer-height: 86px;
+  --tool-panel-height: 252px;
+}
+
+@media (max-width: 920px) {
 
   .app-shell {
     position: fixed;
