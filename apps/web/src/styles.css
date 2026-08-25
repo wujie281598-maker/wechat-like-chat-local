@@ -2466,12 +2466,21 @@ button {
 .media-viewer {
   position: fixed;
   inset: 0;
-  z-index: 45;
+  z-index: 1000;
   display: grid;
   place-items: center;
   background: rgba(0, 0, 0, 0.94);
   overscroll-behavior: none;
   touch-action: manipulation;
+}
+
+.media-viewer-video-frame {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  max-width: 96vw;
+  max-height: 92vh;
 }
 
 .media-viewer img,
@@ -2490,8 +2499,8 @@ button {
 
 .media-viewer-close {
   position: fixed;
-  top: 22px;
-  left: 22px;
+  top: max(18px, env(safe-area-inset-top));
+  left: max(18px, env(safe-area-inset-left));
   width: 56px;
   height: 56px;
   border: 0;
@@ -2500,15 +2509,15 @@ button {
   place-items: center;
   color: white;
   background: rgba(255, 255, 255, 0.12);
-  z-index: 5;
+  z-index: 1060;
   touch-action: manipulation;
   pointer-events: auto;
 }
 
 .media-viewer-save {
   position: fixed;
-  top: 22px;
-  right: 22px;
+  top: max(22px, env(safe-area-inset-top));
+  right: max(18px, env(safe-area-inset-right));
   height: 42px;
   border: 0;
   border-radius: 999px;
@@ -2518,7 +2527,7 @@ button {
   padding: 0 14px;
   color: white;
   background: rgba(255, 255, 255, 0.14);
-  z-index: 5;
+  z-index: 1060;
   touch-action: manipulation;
   pointer-events: auto;
 }

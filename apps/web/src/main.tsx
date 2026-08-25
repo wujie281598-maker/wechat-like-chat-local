@@ -1152,6 +1152,7 @@ function App() {
   const [mediaViewerUrl, setMediaViewerUrl] = useState("");
   const [mediaViewerError, setMediaViewerError] = useState("");
   const [mediaViewerLoading, setMediaViewerLoading] = useState(false);
+  const [mediaViewerClosing, setMediaViewerClosing] = useState(false);
   const [actionMenu, setActionMenu] = useState<{ messageId: number; x: number; y: number } | null>(null);
   const [conversationMenu, setConversationMenu] = useState<{ conversationId: number; x: number; y: number } | null>(null);
   const [swipedConversationId, setSwipedConversationId] = useState<number | null>(null);
@@ -1183,6 +1184,7 @@ function App() {
   const [editingRemark, setEditingRemark] = useState<{ conversationId: number; value: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const mediaViewerVideoRef = useRef<HTMLVideoElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const captureInputRef = useRef<HTMLInputElement | null>(null);
@@ -1212,6 +1214,7 @@ function App() {
   const mediaViewerScrollTopRef = useRef(0);
   const mediaViewerHeightLockedRef = useRef(false);
   const mediaViewerRecoverTimerRef = useRef<number | null>(null);
+  const mediaViewerCloseTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const updateAppHeight = () => {
@@ -1585,6 +1588,7 @@ function App() {
       if (capturedMedia) URL.revokeObjectURL(capturedMedia.url);
       if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
       if (mediaViewerRecoverTimerRef.current) window.clearTimeout(mediaViewerRecoverTimerRef.current);
+      if (mediaViewerCloseTimerRef.current) window.clearTimeout(mediaViewerCloseTimerRef.current);
     };
   }, []);
 
@@ -2244,22 +2248,53 @@ function App() {
       window.clearTimeout(mediaViewerRecoverTimerRef.current);
       mediaViewerRecoverTimerRef.current = null;
     }
+    if (mediaViewerCloseTimerRef.current) {
+      window.clearTimeout(mediaViewerCloseTimerRef.current);
+      mediaViewerCloseTimerRef.current = null;
+    }
     mediaViewerScrollTopRef.current = messageListRef.current?.scrollTop ?? 0;
     mediaViewerHeightLockedRef.current = true;
     document.documentElement.classList.add("media-viewer-open");
+    setMediaViewerClosing(false);
     setMediaViewerError("");
-    setMediaViewerLoading(media.mimeType.startsWith("video/"));
+    setMediaViewerLoading(false);
     setMediaViewerUrl(media.url);
     setViewingMedia(media);
   }
 
+  function tryPlayViewerVideo(video: HTMLVideoElement) {
+    const playResult = video.play();
+    if (playResult) {
+      playResult.catch(() => {
+        setMediaViewerLoading(false);
+      });
+    }
+  }
+
   function closeMediaViewer() {
+    if (mediaViewerClosing) return;
+    setMediaViewerClosing(true);
+    const video = mediaViewerVideoRef.current;
+    if (video) {
+      try {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      } catch {
+        // Ignore browser-specific media cleanup errors.
+      }
+      mediaViewerVideoRef.current = null;
+    }
     skipNextMessageAutoScrollRef.current = true;
     setMediaViewerError("");
     setMediaViewerLoading(false);
     setMediaViewerUrl("");
-    setViewingMedia(null);
-    document.documentElement.classList.remove("media-viewer-open");
+    mediaViewerCloseTimerRef.current = window.setTimeout(() => {
+      setViewingMedia(null);
+      setMediaViewerClosing(false);
+      document.documentElement.classList.remove("media-viewer-open");
+      mediaViewerCloseTimerRef.current = null;
+    }, 180);
     window.requestAnimationFrame(() => {
       const list = messageListRef.current;
       if (list) {
@@ -3028,41 +3063,57 @@ function App() {
           </button>
           {viewingMedia.mimeType.startsWith("video/") ? (
             <>
-              <video
-                key={mediaViewerUrl || viewingMedia.url}
-                src={`${API_URL}${mediaViewerUrl || viewingMedia.url}`}
-                controls
-                playsInline
-                preload="metadata"
-                onPointerDown={(event) => event.stopPropagation()}
-                onTouchStart={(event) => event.stopPropagation()}
-                onTouchEnd={(event) => event.stopPropagation()}
-                onClick={(event) => event.stopPropagation()}
-                onLoadedData={() => {
-                  setMediaViewerLoading(false);
-                  setMediaViewerError("");
-                }}
-                onCanPlay={() => {
-                  setMediaViewerLoading(false);
-                  setMediaViewerError("");
-                }}
-                onPlaying={() => {
-                  setMediaViewerLoading(false);
-                  setMediaViewerError("");
-                }}
-                onWaiting={() => setMediaViewerLoading(true)}
-                onError={() => {
-                  if (viewingMedia.originalUrl && viewingMedia.originalUrl !== (mediaViewerUrl || viewingMedia.url)) {
-                    setMediaViewerUrl(viewingMedia.originalUrl);
-                    setMediaViewerLoading(true);
+              {!mediaViewerClosing ? <div className="media-viewer-video-frame" onClick={(event) => event.stopPropagation()}>
+                <video
+                  ref={mediaViewerVideoRef}
+                  key={mediaViewerUrl || viewingMedia.url}
+                  src={`${API_URL}${mediaViewerUrl || viewingMedia.url}`}
+                  controls
+                  autoPlay
+                  playsInline
+                  preload="metadata"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onTouchStart={(event) => event.stopPropagation()}
+                  onTouchEnd={(event) => event.stopPropagation()}
+                  onClick={(event) => event.stopPropagation()}
+                  onLoadedMetadata={(event) => {
+                    setMediaViewerLoading(false);
                     setMediaViewerError("");
-                    setNotice("正在尝试原视频播放...");
-                    return;
-                  }
-                  setMediaViewerLoading(false);
-                  setMediaViewerError("视频加载失败，可先保存到手机相册查看");
-                }}
-              />
+                    tryPlayViewerVideo(event.currentTarget);
+                  }}
+                  onPlay={() => {
+                    setMediaViewerLoading(false);
+                    setMediaViewerError("");
+                  }}
+                  onLoadedData={() => {
+                    setMediaViewerLoading(false);
+                    setMediaViewerError("");
+                  }}
+                  onCanPlay={(event) => {
+                    setMediaViewerLoading(false);
+                    setMediaViewerError("");
+                    if (event.currentTarget.paused) tryPlayViewerVideo(event.currentTarget);
+                  }}
+                  onPlaying={() => {
+                    setMediaViewerLoading(false);
+                    setMediaViewerError("");
+                  }}
+                  onWaiting={() => setMediaViewerLoading(true)}
+                  onStalled={() => setMediaViewerLoading(true)}
+                  onSuspend={() => setMediaViewerLoading(false)}
+                  onError={() => {
+                    if (viewingMedia.originalUrl && viewingMedia.originalUrl !== (mediaViewerUrl || viewingMedia.url)) {
+                      setMediaViewerUrl(viewingMedia.originalUrl);
+                      setMediaViewerLoading(true);
+                      setMediaViewerError("");
+                      setNotice("正在尝试原视频播放...");
+                      return;
+                    }
+                    setMediaViewerLoading(false);
+                    setMediaViewerError("视频加载失败，可先保存到手机相册查看");
+                  }}
+                />
+              </div> : null}
               {mediaViewerLoading && !mediaViewerError ? (
                 <div className="media-viewer-loading" onClick={(event) => event.stopPropagation()}>
                   <span />
