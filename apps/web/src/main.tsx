@@ -1133,9 +1133,10 @@ function App() {
 
   function handleMessageListScroll() {
     const list = messageListRef.current;
-    if (!list || !returnBottomVisible) return;
+    if (!list) return;
     const distanceToBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
-    if (distanceToBottom < 80) setReturnBottomVisible(false);
+    const shouldShowReturnButton = !messagesLoading && distanceToBottom > 160;
+    setReturnBottomVisible((visible) => (visible === shouldShowReturnButton ? visible : shouldShowReturnButton));
   }
 
   useEffect(() => {
