@@ -1103,7 +1103,7 @@ app.post("/api/conversations/:id/forward", (request, response) => {
         body: sourceMessage.body,
         clientId: `${parsed.data.userId}-forward-${Date.now()}-${index}-${crypto.randomUUID()}`,
       });
-    }).filter(Boolean);
+    }).filter((message): message is ReturnType<typeof createMessage> => Boolean(message));
 
     if (parsed.data.mode === "bundle") {
       const bundleBody = JSON.stringify({
@@ -1125,8 +1125,9 @@ app.post("/api/conversations/:id/forward", (request, response) => {
       }));
     }
 
-    const latestMessage = created.at(-1);
-    if (latestMessage) emitNewMessage(latestMessage);
+    for (const message of created) {
+      emitNewMessage(message);
+    }
     response.json({ messages: created });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "转发失败" });
