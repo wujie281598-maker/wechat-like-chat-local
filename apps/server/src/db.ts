@@ -1268,6 +1268,24 @@ export function getMessages(
   return { messages: hasMore ? rows.slice(1) : rows, hasMore };
 }
 
+export function getMessageByIdForConversation(conversationId: number, messageId: number, userId: number) {
+  assertActiveUser(userId);
+  return (
+    db
+      .prepare(`
+        SELECT messages.*, users.nickname AS sender_nickname, COALESCE(staff_avatar.avatar_url, users.avatar_url) AS sender_avatar_url
+        FROM messages
+        JOIN users ON users.id = messages.sender_id
+        LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
+        JOIN conversation_members cm ON cm.conversation_id = messages.conversation_id AND cm.user_id = ?
+        WHERE messages.conversation_id = ?
+          AND messages.id = ?
+        LIMIT 1
+      `)
+      .get(userId, conversationId, messageId) as MessageRow | undefined
+  ) ?? null;
+}
+
 export function getConversationMemberIds(conversationId: number): number[] {
   const rows = db
     .prepare("SELECT user_id FROM conversation_members WHERE conversation_id = ?")

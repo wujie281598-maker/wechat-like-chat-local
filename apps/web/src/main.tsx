@@ -155,6 +155,8 @@ type QuoteBody = {
   };
 };
 
+type QuoteTarget = QuoteBody["quote"];
+
 type QuickReply = {
   id: number;
   staff_id: number;
@@ -1254,7 +1256,7 @@ function App() {
   const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [draft, setDraft] = useState("");
-  const [quoteTarget, setQuoteTarget] = useState<QuoteBody["quote"] | null>(null);
+  const [quoteTarget, setQuoteTarget] = useState<QuoteTarget | null>(null);
   const [query, setQuery] = useState("");
   const [selectedMessageIds, setSelectedMessageIds] = useState<number[]>([]);
   const [forwardMode, setForwardMode] = useState<ForwardMode | null>(null);
@@ -1644,24 +1646,78 @@ function App() {
     }
   }
 
-  async function jumpToMessage(messageId: number) {
+  function scrollToMessageElement(messageId: number) {
     const target = messageListRef.current?.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
-    if (!target) {
-      const loaded = await loadOlderMessagesUntil(messageId);
-      if (loaded) {
-        window.setTimeout(() => {
-          void jumpToMessage(messageId);
-        }, 0);
-        return;
-      }
-      setNotice("引用的消息较早，暂时定位不到");
-      return;
-    }
+    if (!target) return false;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     setReturnBottomVisible(true);
     setHighlightedMessageId(messageId);
     if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
     highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 1800);
+    return true;
+  }
+
+  function findLoadedQuotedMessage(quote: QuoteTarget) {
+    const sameSenderMessages = messagesRef.current.filter((message) => message.sender_nickname === quote.sender && !message.revoked_at);
+    return (
+      sameSenderMessages.find((message) => quotePreviewForMessage(message) === quote.preview) ??
+      sameSenderMessages.find((message) => quotePreviewForMessage(message).includes(quote.preview) || quote.preview.includes(quotePreviewForMessage(message))) ??
+      null
+    );
+  }
+
+  async function loadQuotedMessage(messageId: number) {
+    const conversationId = activeConversationIdRef.current;
+    const user = currentUserRef.current;
+    if (!conversationId || !user) return null;
+    try {
+      const result = await api<{ message: ChatMessage }>(
+        `/api/conversations/${conversationId}/messages/${messageId}?userId=${user.id}`,
+      );
+      setMessages((current) => mergeMessages(current, [result.message]));
+      messagesRef.current = mergeMessages(messagesRef.current, [result.message]);
+      return result.message;
+    } catch {
+      return null;
+    }
+  }
+
+  async function jumpToMessage(messageId: number, quote?: QuoteTarget) {
+    if (scrollToMessageElement(messageId)) return;
+
+    if (quote) {
+      const loadedMatch = findLoadedQuotedMessage(quote);
+      if (loadedMatch && scrollToMessageElement(loadedMatch.id)) return;
+    }
+
+    const fetchedMessage = await loadQuotedMessage(messageId);
+    if (fetchedMessage) {
+      window.setTimeout(() => {
+        if (!scrollToMessageElement(fetchedMessage.id) && quote) {
+          const loadedMatch = findLoadedQuotedMessage(quote);
+          if (loadedMatch) scrollToMessageElement(loadedMatch.id);
+        }
+      }, 0);
+      return;
+    }
+
+    const target = messageListRef.current?.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
+    if (!target) {
+      const loaded = await loadOlderMessagesUntil(messageId);
+      if (loaded) {
+        window.setTimeout(() => {
+          void jumpToMessage(messageId, quote);
+        }, 0);
+        return;
+      }
+      if (quote) {
+        const loadedMatch = findLoadedQuotedMessage(quote);
+        if (loadedMatch && scrollToMessageElement(loadedMatch.id)) return;
+      }
+      setNotice("引用的消息较早，暂时定位不到");
+      return;
+    }
+    scrollToMessageElement(messageId);
   }
 
   function handleMessageListScroll() {
@@ -2896,7 +2952,8 @@ function App() {
                           const clickTarget = event.target instanceof Element ? event.target : null;
                           const quoteJump = clickTarget?.closest<HTMLElement>("[data-quote-message-id]");
                           if (quoteJump?.dataset.quoteMessageId) {
-                            void jumpToMessage(Number(quoteJump.dataset.quoteMessageId));
+                            const quoteBody = parseBody<QuoteBody>(message.body);
+                            void jumpToMessage(Number(quoteJump.dataset.quoteMessageId), quoteBody?.quote);
                             return;
                           }
                           if (selectedMessageIds.length > 0) {
@@ -2927,7 +2984,7 @@ function App() {
                         <MessageBubble
                           message={message}
                           onMediaLoad={scrollToBottomIfNearBottom}
-                          onQuoteJump={(messageId) => void jumpToMessage(messageId)}
+                          onQuoteJump={(quote) => void jumpToMessage(quote.messageId, quote)}
                         />
                       </button>
                     </div>
@@ -3475,7 +3532,7 @@ function MessageBubble({
 }: {
   message: ChatMessage;
   onMediaLoad?: () => void;
-  onQuoteJump?: (messageId: number) => void;
+  onQuoteJump?: (quote: QuoteTarget) => void;
 }) {
   if (message.revoked_at) {
     return <p className="bubble">[已撤回]</p>;
@@ -3526,13 +3583,13 @@ function MessageBubble({
           title="点击定位到引用消息"
           onClick={(event) => {
             event.stopPropagation();
-            onQuoteJump?.(quoteBody.quote.messageId);
+            onQuoteJump?.(quoteBody.quote);
           }}
           onKeyDown={(event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
             event.stopPropagation();
-            onQuoteJump?.(quoteBody.quote.messageId);
+            onQuoteJump?.(quoteBody.quote);
           }}
         >
           <strong>{quoteBody.quote.sender}</strong>

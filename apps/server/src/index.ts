@@ -32,6 +32,7 @@ import {
   getInviteLinkByCode,
   getMessagesByIds,
   getMessages,
+  getMessageByIdForConversation,
   getCustomerRetentionNotice,
   markConversationRead,
   getOrCreateDirectConversation,
@@ -825,6 +826,27 @@ app.get("/api/conversations/:id/messages", (request, response) => {
 
   try {
     response.json(getMessages(conversationId, userId, { limit, beforeMessageId }));
+  } catch (error) {
+    response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
+  }
+});
+
+app.get("/api/conversations/:id/messages/:messageId", (request, response) => {
+  const conversationId = Number(request.params.id);
+  const messageId = Number(request.params.messageId);
+  const userId = Number(request.query.userId);
+  if (!conversationId || !messageId || !userId) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+
+  try {
+    const message = getMessageByIdForConversation(conversationId, messageId, userId);
+    if (!message) {
+      response.status(404).json({ error: "消息不存在" });
+      return;
+    }
+    response.json({ message });
   } catch (error) {
     response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
   }
