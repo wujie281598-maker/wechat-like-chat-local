@@ -4,7 +4,7 @@ import multer from "multer";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdirSync, existsSync, promises as fs } from "node:fs";
+import { createReadStream, mkdirSync, existsSync, promises as fs } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { Server } from "socket.io";
 import { z } from "zod";
@@ -101,6 +101,57 @@ const upload = multer({
 
 app.use(cors({ origin: true }));
 app.use(express.json());
+app.get("/uploads/:file", async (request, response, next) => {
+  const fileName = basename(request.params.file);
+  const extension = extname(fileName).toLowerCase();
+  const contentTypes: Record<string, string> = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+  };
+  const contentType = contentTypes[extension];
+  if (!contentType) {
+    next();
+    return;
+  }
+
+  const filePath = join(uploadDir, fileName);
+  try {
+    const stat = await fs.stat(filePath);
+    const fileSize = stat.size;
+    const range = request.headers.range;
+    response.setHeader("Access-Control-Allow-Origin", "*");
+    response.setHeader("Accept-Ranges", "bytes");
+    response.setHeader("Cache-Control", "public, max-age=604800, immutable");
+    response.setHeader("Content-Type", contentType);
+
+    if (!range) {
+      response.setHeader("Content-Length", fileSize);
+      createReadStream(filePath).pipe(response);
+      return;
+    }
+
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (!match) {
+      response.status(416).setHeader("Content-Range", `bytes */${fileSize}`).end();
+      return;
+    }
+    const start = match[1] ? Number(match[1]) : 0;
+    const end = match[2] ? Number(match[2]) : fileSize - 1;
+    if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= fileSize) {
+      response.status(416).setHeader("Content-Range", `bytes */${fileSize}`).end();
+      return;
+    }
+    const finalEnd = Math.min(end, fileSize - 1);
+    response.status(206);
+    response.setHeader("Content-Range", `bytes ${start}-${finalEnd}/${fileSize}`);
+    response.setHeader("Content-Length", finalEnd - start + 1);
+    createReadStream(filePath, { start, end: finalEnd }).pipe(response);
+  } catch {
+    next();
+  }
+});
 app.use(
   "/uploads",
   express.static(uploadDir, {

@@ -135,6 +135,11 @@ type MediaBody = {
   transcoded?: boolean;
 };
 
+type WebKitVideoElement = HTMLVideoElement & {
+  webkitExitFullscreen?: () => void;
+  webkitDisplayingFullscreen?: boolean;
+};
+
 type BundleBody = {
   title: string;
   count: number;
@@ -1332,6 +1337,8 @@ function App() {
   const mediaViewerHeightLockedRef = useRef(false);
   const mediaViewerRecoverTimerRef = useRef<number | null>(null);
   const mediaViewerCloseTimerRef = useRef<number | null>(null);
+  const mediaViewerObjectUrlRef = useRef("");
+  const mediaViewerVideoCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const updateAppHeight = () => {
@@ -1767,12 +1774,40 @@ function App() {
   useEffect(() => {
     return () => {
       stopCamera();
+      stopViewerVideo();
+      mediaViewerVideoCleanupRef.current?.();
       if (capturedMedia) URL.revokeObjectURL(capturedMedia.url);
       if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
       if (mediaViewerRecoverTimerRef.current) window.clearTimeout(mediaViewerRecoverTimerRef.current);
       if (mediaViewerCloseTimerRef.current) window.clearTimeout(mediaViewerCloseTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!viewingMedia?.mimeType.startsWith("video/")) return;
+    setMediaViewerViewportVars();
+    const stopWhenHidden = () => {
+      if (document.hidden) stopViewerVideo();
+    };
+    const closeOnFullscreenExit = () => {
+      const video = mediaViewerVideoRef.current as WebKitVideoElement | null;
+      if (!document.fullscreenElement && !video?.webkitDisplayingFullscreen) {
+        closeMediaViewer();
+      }
+    };
+    document.addEventListener("visibilitychange", stopWhenHidden);
+    document.addEventListener("fullscreenchange", closeOnFullscreenExit);
+    window.addEventListener("resize", setMediaViewerViewportVars);
+    window.visualViewport?.addEventListener("resize", setMediaViewerViewportVars);
+    window.visualViewport?.addEventListener("scroll", setMediaViewerViewportVars);
+    return () => {
+      document.removeEventListener("visibilitychange", stopWhenHidden);
+      document.removeEventListener("fullscreenchange", closeOnFullscreenExit);
+      window.removeEventListener("resize", setMediaViewerViewportVars);
+      window.visualViewport?.removeEventListener("resize", setMediaViewerViewportVars);
+      window.visualViewport?.removeEventListener("scroll", setMediaViewerViewportVars);
+    };
+  }, [viewingMedia]);
 
   useEffect(() => {
     if (!viewingMedia?.mimeType.startsWith("video/") || !mediaViewerLoading || mediaViewerError) return;
@@ -2468,6 +2503,7 @@ function App() {
     }
     mediaViewerScrollTopRef.current = messageListRef.current?.scrollTop ?? 0;
     mediaViewerHeightLockedRef.current = true;
+    setMediaViewerViewportVars();
     document.documentElement.classList.add("media-viewer-open");
     setMediaViewerClosing(false);
     setMediaViewerError("");
@@ -2485,30 +2521,96 @@ function App() {
     }
   }
 
+  function setMediaViewerViewportVars() {
+    const viewport = window.visualViewport;
+    const height = viewport?.height ?? window.innerHeight;
+    const width = viewport?.width ?? window.innerWidth;
+    const isTouchDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+    const isMobileLayout = isTouchDevice && width <= 920;
+    const topReserve = isMobileLayout ? 92 : 82;
+    const bottomReserve = isMobileLayout ? Math.max(150, Math.round(height * 0.18)) : 34;
+    const usableHeight = Math.max(220, Math.round(height - topReserve - bottomReserve));
+    document.documentElement.style.setProperty("--media-viewer-height", `${usableHeight}px`);
+  }
+
+  function stopViewerVideo() {
+    mediaViewerVideoCleanupRef.current?.();
+    mediaViewerVideoCleanupRef.current = null;
+    const video = mediaViewerVideoRef.current as WebKitVideoElement | null;
+    if (!video) return;
+    try {
+      if (video.webkitDisplayingFullscreen) video.webkitExitFullscreen?.();
+    } catch {
+      // Ignore browser-specific fullscreen cleanup errors.
+    }
+    try {
+      video.pause();
+      video.muted = true;
+      video.currentTime = 0;
+    } catch {
+      // Ignore browser-specific media cleanup errors.
+    }
+    try {
+      video.removeAttribute("src");
+      video.src = "";
+      video.load();
+    } catch {
+      // Ignore browser-specific media cleanup errors.
+    }
+    if (mediaViewerObjectUrlRef.current) {
+      URL.revokeObjectURL(mediaViewerObjectUrlRef.current);
+      mediaViewerObjectUrlRef.current = "";
+    }
+    mediaViewerVideoRef.current = null;
+  }
+
+  function bindMediaViewerVideo(video: HTMLVideoElement | null) {
+    mediaViewerVideoCleanupRef.current?.();
+    mediaViewerVideoCleanupRef.current = null;
+    mediaViewerVideoRef.current = video;
+    if (!video) return;
+    const handleWebkitEndFullscreen = () => {
+      stopViewerVideo();
+      closeMediaViewer();
+    };
+    video.addEventListener("webkitendfullscreen", handleWebkitEndFullscreen);
+    mediaViewerVideoCleanupRef.current = () => {
+      video.removeEventListener("webkitendfullscreen", handleWebkitEndFullscreen);
+    };
+  }
+
+  function recoverAfterMediaViewerClose() {
+    if (mediaViewerRecoverTimerRef.current) window.clearTimeout(mediaViewerRecoverTimerRef.current);
+    mediaViewerRecoverTimerRef.current = window.setTimeout(() => {
+      mediaViewerHeightLockedRef.current = false;
+      const height = window.visualViewport?.height ?? window.innerHeight;
+      document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+      mediaViewerRecoverTimerRef.current = null;
+    }, 180);
+  }
+
   function closeMediaViewer() {
     if (mediaViewerClosing) return;
+    const isVideo = Boolean(viewingMedia?.mimeType.startsWith("video/"));
     setMediaViewerClosing(true);
-    const video = mediaViewerVideoRef.current;
-    if (video) {
-      try {
-        video.pause();
-        video.removeAttribute("src");
-        video.load();
-      } catch {
-        // Ignore browser-specific media cleanup errors.
-      }
-      mediaViewerVideoRef.current = null;
-    }
+    stopViewerVideo();
     skipNextMessageAutoScrollRef.current = true;
     setMediaViewerError("");
     setMediaViewerLoading(false);
     setMediaViewerUrl("");
-    mediaViewerCloseTimerRef.current = window.setTimeout(() => {
+    const finishClose = () => {
       setViewingMedia(null);
       setMediaViewerClosing(false);
       document.documentElement.classList.remove("media-viewer-open");
+      document.documentElement.style.removeProperty("--media-viewer-height");
       mediaViewerCloseTimerRef.current = null;
-    }, 180);
+      recoverAfterMediaViewerClose();
+    };
+    if (isVideo) {
+      finishClose();
+    } else {
+      mediaViewerCloseTimerRef.current = window.setTimeout(finishClose, 120);
+    }
     window.requestAnimationFrame(() => {
       const list = messageListRef.current;
       if (list) {
@@ -2519,12 +2621,6 @@ function App() {
         }, 120);
       }
     });
-    if (mediaViewerRecoverTimerRef.current) window.clearTimeout(mediaViewerRecoverTimerRef.current);
-    mediaViewerRecoverTimerRef.current = window.setTimeout(() => {
-      mediaViewerHeightLockedRef.current = false;
-      const height = window.visualViewport?.height ?? window.innerHeight;
-      document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
-    }, 260);
   }
 
   async function writeClipboardText(text: string) {
@@ -2874,6 +2970,12 @@ function App() {
                 </button>
               </div>
             </header>
+            {retentionNotice ? (
+              <div className="retention-chat-notice">
+                <strong>温馨提示</strong>
+                <p>{retentionNotice.text}</p>
+              </div>
+            ) : null}
             <div className={`message-list ${messagesLoading ? "is-switching" : ""}`} ref={messageListRef} onScroll={handleMessageListScroll}>
               {olderMessagesLoading ? (
                 <div className="older-loading">
@@ -2891,12 +2993,6 @@ function App() {
                 <div className="upload-loading">
                   <span />
                   <strong>正在上传文件...</strong>
-                </div>
-              ) : null}
-              {retentionNotice ? (
-                <div className="retention-chat-notice">
-                  <strong>温馨提示</strong>
-                  <p>{retentionNotice.text}</p>
                 </div>
               ) : null}
               {messages.map((message) => {
@@ -3318,17 +3414,20 @@ function App() {
             <>
               {!mediaViewerClosing ? <div className="media-viewer-video-frame" onClick={(event) => event.stopPropagation()}>
                 <video
-                  ref={mediaViewerVideoRef}
+                  ref={bindMediaViewerVideo}
                   key={mediaViewerUrl || viewingMedia.url}
                   src={`${API_URL}${mediaViewerUrl || viewingMedia.url}`}
                   controls
-                  autoPlay
                   playsInline
+                  disablePictureInPicture
+                  controlsList="nodownload noplaybackrate"
                   preload="metadata"
+                  poster={viewingMedia.posterUrl ? `${API_URL}${viewingMedia.posterUrl}` : undefined}
                   onPointerDown={(event) => event.stopPropagation()}
                   onTouchStart={(event) => event.stopPropagation()}
                   onTouchEnd={(event) => event.stopPropagation()}
                   onClick={(event) => event.stopPropagation()}
+                  onAbort={() => setMediaViewerLoading(false)}
                   onLoadedMetadata={(event) => {
                     setMediaViewerLoading(false);
                     setMediaViewerError("");
@@ -3351,9 +3450,12 @@ function App() {
                     setMediaViewerLoading(false);
                     setMediaViewerError("");
                   }}
+                  onPause={() => setMediaViewerLoading(false)}
+                  onEnded={() => setMediaViewerLoading(false)}
                   onWaiting={() => setMediaViewerLoading(true)}
                   onStalled={() => setMediaViewerLoading(true)}
                   onSuspend={() => setMediaViewerLoading(false)}
+                  onEmptied={() => setMediaViewerLoading(false)}
                   onError={() => {
                     if (viewingMedia.originalUrl && viewingMedia.originalUrl !== (mediaViewerUrl || viewingMedia.url)) {
                       setMediaViewerUrl(viewingMedia.originalUrl);
