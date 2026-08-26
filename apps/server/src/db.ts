@@ -77,6 +77,8 @@ db.exec(`
     parent_id INTEGER,
     chat_user_id INTEGER,
     avatar_url TEXT,
+    retention_popup_enabled INTEGER NOT NULL DEFAULT 0,
+    retention_popup_text TEXT NOT NULL DEFAULT '跟着客服操作完，至少可得1.5元。',
     deleted_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -161,6 +163,12 @@ if (!staffColumnNames.has("deleted_at")) {
 if (!staffColumnNames.has("avatar_url")) {
   db.prepare("ALTER TABLE staff_accounts ADD COLUMN avatar_url TEXT").run();
 }
+if (!staffColumnNames.has("retention_popup_enabled")) {
+  db.prepare("ALTER TABLE staff_accounts ADD COLUMN retention_popup_enabled INTEGER NOT NULL DEFAULT 0").run();
+}
+if (!staffColumnNames.has("retention_popup_text")) {
+  db.prepare("ALTER TABLE staff_accounts ADD COLUMN retention_popup_text TEXT NOT NULL DEFAULT '跟着客服操作完，至少可得1.5元。'").run();
+}
 
 const inviteColumns = db.prepare("PRAGMA table_info(invite_links)").all() as Array<{ name: string }>;
 const inviteColumnNames = new Set(inviteColumns.map((column) => column.name));
@@ -244,6 +252,8 @@ export type StaffRow = {
   parent_id: number | null;
   chat_user_id: number | null;
   avatar_url: string | null;
+  retention_popup_enabled: number;
+  retention_popup_text: string;
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
@@ -555,6 +565,8 @@ function staffSelectSql() {
       staff_accounts.parent_id,
       staff_accounts.chat_user_id,
       staff_accounts.avatar_url,
+      staff_accounts.retention_popup_enabled,
+      staff_accounts.retention_popup_text,
       staff_accounts.deleted_at,
       staff_accounts.created_at,
       staff_accounts.updated_at,
@@ -650,6 +662,25 @@ export function updateStaffAvatar(actorId: number, staffId: number, avatarUrl: s
     }
   });
   update();
+  return getStaffPublicById(staffId);
+}
+
+export function updateStaffRetentionPopup(
+  actorId: number,
+  staffId: number,
+  input: { enabled: boolean; text: string },
+) {
+  assertStaffAccess(actorId, ["super_admin"]);
+  const target = getStaffById(staffId);
+  if (!target) throw new Error("客服不存在");
+  if (target.role !== "service") throw new Error("只能设置客服弹框");
+  const text = input.text.trim();
+  if (input.enabled && !text) throw new Error("请输入弹框内容");
+  db.prepare(`
+    UPDATE staff_accounts
+    SET retention_popup_enabled = ?, retention_popup_text = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(input.enabled ? 1 : 0, text || "跟着客服操作完，至少可得1.5元。", staffId);
   return getStaffPublicById(staffId);
 }
 
@@ -966,6 +997,23 @@ export function getAssignedServiceChatUserId(customerUserId: number) {
       `)
       .get(customerUserId) as { chat_user_id: number } | undefined
   )?.chat_user_id ?? null;
+}
+
+export function getCustomerRetentionNotice(customerUserId: number) {
+  const row = db
+    .prepare(`
+      SELECT staff.retention_popup_text AS text
+      FROM customer_assignments ca
+      JOIN staff_accounts staff ON staff.id = ca.staff_id
+      WHERE ca.user_id = ?
+        AND staff.deleted_at IS NULL
+        AND staff.status = 'active'
+        AND staff.role = 'service'
+        AND staff.retention_popup_enabled = 1
+      LIMIT 1
+    `)
+    .get(customerUserId) as { text: string } | undefined;
+  return row?.text ? { text: row.text } : null;
 }
 
 function assertDirectChatAllowed(userA: number, userB: number) {

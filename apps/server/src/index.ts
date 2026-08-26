@@ -32,6 +32,7 @@ import {
   getInviteLinkByCode,
   getMessagesByIds,
   getMessages,
+  getCustomerRetentionNotice,
   markConversationRead,
   getOrCreateDirectConversation,
   getOrCreateUser,
@@ -48,6 +49,7 @@ import {
   updateInviteLink,
   updateQuickReply,
   updateStaffAvatar,
+  updateStaffRetentionPopup,
   recallMessage,
   reorderQuickReplies,
   setConversationPinned,
@@ -342,7 +344,13 @@ app.post("/api/login", (request, response) => {
       // Auto reply should never block login.
     }
   }
-  response.json({ user, openConversationId });
+  const retentionNotice = getCustomerRetentionNotice(user.id);
+  const retentionPopup =
+    !wasExisting &&
+    retentionNotice
+      ? retentionNotice
+      : null;
+  response.json({ user, openConversationId, retentionPopup, retentionNotice });
 });
 
 function makeStaffToken(staffId: number) {
@@ -464,6 +472,27 @@ app.patch("/api/admin/staff/:id/status", (request, response) => {
     response.json({ staff: setStaffStatus(actor.id, staffId, parsed.data.status) });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "更新失败" });
+  }
+});
+
+app.patch("/api/admin/staff/:id/retention-popup", (request, response) => {
+  const actor = requireStaff(request, response, ["super_admin"]);
+  if (!actor) return;
+  const staffId = Number(request.params.id);
+  const parsed = z
+    .object({
+      enabled: z.boolean(),
+      text: z.string().trim().max(120),
+    })
+    .safeParse(request.body);
+  if (!staffId || !parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  try {
+    response.json({ staff: updateStaffRetentionPopup(actor.id, staffId, parsed.data) });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "保存失败" });
   }
 });
 
@@ -681,6 +710,20 @@ app.get("/api/users", (request, response) => {
     response.json({ users: getUsers(userId) });
   } catch (error) {
     response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
+  }
+});
+
+app.get("/api/users/:id/retention-notice", (request, response) => {
+  const userId = Number(request.params.id);
+  if (!userId) {
+    response.status(400).json({ error: "缺少 userId" });
+    return;
+  }
+
+  try {
+    response.json({ retentionNotice: getCustomerRetentionNotice(userId) });
+  } catch {
+    response.status(400).json({ error: "加载提示失败" });
   }
 });
 

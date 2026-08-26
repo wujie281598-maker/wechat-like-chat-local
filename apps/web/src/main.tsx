@@ -185,6 +185,8 @@ type StaffAccount = {
   parent_name: string | null;
   chat_nickname: string | null;
   avatar_url: string | null;
+  retention_popup_enabled: number;
+  retention_popup_text: string;
 };
 
 type InviteLink = {
@@ -440,7 +442,20 @@ function captureVideoPosterFromUrl(url: string): Promise<string | null> {
   });
 }
 
-function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number | null) => void }) {
+type RetentionPopup = {
+  text: string;
+};
+
+function Login({
+  onLogin,
+}: {
+  onLogin: (
+    user: User,
+    openConversationId?: number | null,
+    retentionPopup?: RetentionPopup | null,
+    retentionNotice?: RetentionPopup | null,
+  ) => void;
+}) {
   const [loginMode, setLoginMode] = useState<"customer" | "service">("customer");
   const [phone, setPhone] = useState("");
   const [serviceUsername, setServiceUsername] = useState("");
@@ -448,6 +463,25 @@ function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number 
   const inviteCode = useMemo(() => new URLSearchParams(window.location.search).get("invite") ?? "", []);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  function focusLoginInput() {
+    window.setTimeout(() => {
+      const width = window.visualViewport?.width ?? window.innerWidth;
+      const isTouchDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+      if (isTouchDevice && width <= 920) {
+        document.documentElement.classList.add("keyboard-open");
+        window.scrollTo(0, 0);
+      }
+    }, 80);
+  }
+
+  function blurLoginInput() {
+    window.setTimeout(() => {
+      if (document.activeElement instanceof HTMLInputElement) return;
+      document.documentElement.classList.remove("keyboard-open");
+      window.scrollTo(0, 0);
+    }, 120);
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -458,13 +492,23 @@ function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number 
     }
     setLoading(true);
     try {
-      const result =
+      const result: {
+        user: User;
+        openConversationId?: number | null;
+        retentionPopup?: RetentionPopup | null;
+        retentionNotice?: RetentionPopup | null;
+      } =
         loginMode === "service"
           ? await api<{ user: User }>("/api/staff-chat/login", {
               method: "POST",
               body: JSON.stringify({ username: serviceUsername, password: servicePassword }),
             })
-          : await api<{ user: User; openConversationId: number | null }>("/api/login", {
+          : await api<{
+              user: User;
+              openConversationId: number | null;
+              retentionPopup?: RetentionPopup | null;
+              retentionNotice?: RetentionPopup | null;
+            }>("/api/login", {
               method: "POST",
               body: JSON.stringify({ phone, inviteCode: inviteCode || undefined }),
             });
@@ -473,7 +517,9 @@ function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number 
         "openConversationId" in result && typeof result.openConversationId === "number"
           ? result.openConversationId
           : null;
-      onLogin(result.user, openConversationId);
+      const retentionPopup = "retentionPopup" in result ? result.retentionPopup : null;
+      const retentionNotice = "retentionNotice" in result ? result.retentionNotice : null;
+      onLogin(result.user, openConversationId, retentionPopup, retentionNotice);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "登录失败");
     } finally {
@@ -500,6 +546,8 @@ function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number 
               <input
                 id="phone"
                 value={phone}
+                onFocus={focusLoginInput}
+                onBlur={blurLoginInput}
                 onChange={(event) => setPhone(event.target.value.replace(/\D/g, "").slice(0, 11))}
                 placeholder="请输入手机号"
                 inputMode="numeric"
@@ -511,9 +559,9 @@ function Login({ onLogin }: { onLogin: (user: User, openConversationId?: number 
           ) : (
             <>
               <label htmlFor="service-username">客服账号</label>
-              <input id="service-username" value={serviceUsername} onChange={(event) => setServiceUsername(event.target.value)} placeholder="请输入客服账号" autoComplete="username" />
+              <input id="service-username" value={serviceUsername} onFocus={focusLoginInput} onBlur={blurLoginInput} onChange={(event) => setServiceUsername(event.target.value)} placeholder="请输入客服账号" autoComplete="username" />
               <label htmlFor="service-password">客服密码</label>
-              <input id="service-password" type="password" value={servicePassword} onChange={(event) => setServicePassword(event.target.value)} placeholder="请输入客服密码" autoComplete="current-password" />
+              <input id="service-password" type="password" value={servicePassword} onFocus={focusLoginInput} onBlur={blurLoginInput} onChange={(event) => setServicePassword(event.target.value)} placeholder="请输入客服密码" autoComplete="current-password" />
             </>
           )}
           {error ? <div className="form-error">{error}</div> : null}
@@ -549,6 +597,7 @@ function AdminApp() {
   const [linkPage, setLinkPage] = useState(1);
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<number[]>([]);
   const [staffForm, setStaffForm] = useState({ username: "", password: "", displayName: "" });
+  const [staffRetentionDrafts, setStaffRetentionDrafts] = useState<Record<number, { enabled: boolean; text: string }>>({});
   const [linkForm, setLinkForm] = useState({ title: "", ownerStaffId: "", autoReplyEnabled: true, autoReplyText: "{nickname} 你好抖音评论 0.3元一条有效评论，没有数量限制。24小时都可以发 当天晚上10点前统一结算。" });
   const [editingLinkId, setEditingLinkId] = useState<number | null>(null);
   const staffAvatarInputRef = useRef<HTMLInputElement | null>(null);
@@ -565,6 +614,19 @@ function AdminApp() {
       const result = await adminApi<AdminOverview>("/api/admin/overview", nextToken);
       setOverview(result);
       setSettingsDraft(result.settings);
+      setStaffRetentionDrafts(
+        Object.fromEntries(
+          result.staffAccounts
+            .filter((item) => item.role === "service")
+            .map((item) => [
+              item.id,
+              {
+                enabled: Boolean(item.retention_popup_enabled),
+                text: item.retention_popup_text || "跟着客服操作完，至少可得1.5元。",
+              },
+            ]),
+        ),
+      );
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "加载失败");
       localStorage.removeItem("local-chat-admin-token");
@@ -642,6 +704,24 @@ function AdminApp() {
       await loadOverview();
     } catch (requestError) {
       showError(requestError instanceof Error ? requestError.message : "更新失败");
+    }
+  }
+
+  async function saveStaffRetentionPopup(staff: StaffAccount) {
+    const draft = staffRetentionDrafts[staff.id] ?? {
+      enabled: Boolean(staff.retention_popup_enabled),
+      text: staff.retention_popup_text,
+    };
+    setError("");
+    try {
+      await adminApi<{ staff: StaffAccount }>(`/api/admin/staff/${staff.id}/retention-popup`, token, {
+        method: "PATCH",
+        body: JSON.stringify(draft),
+      });
+      await loadOverview();
+      window.alert("弹框配置已保存");
+    } catch (requestError) {
+      showError(requestError instanceof Error ? requestError.message : "保存失败");
     }
   }
 
@@ -933,7 +1013,7 @@ function AdminApp() {
             }}
           />
           <div className="admin-table staff-table simple-staff-table">
-            <div className="admin-table-head"><span>头像</span><span>客服名称</span><span>账号</span><span>聊天显示</span><span>状态</span><span>操作</span></div>
+            <div className="admin-table-head"><span>头像</span><span>客服名称</span><span>账号</span><span>聊天显示</span><span>留存弹框</span><span>状态</span><span>操作</span></div>
             {serviceAccounts.map((item) => (
               <div className="admin-table-row" key={item.id}>
                 <button
@@ -951,6 +1031,39 @@ function AdminApp() {
                 <strong>{item.display_name}</strong>
                 <span>{item.username}</span>
                 <span>{item.display_name}</span>
+                <div className="retention-config">
+                  <label className="admin-switch">
+                    <input
+                      type="checkbox"
+                      checked={staffRetentionDrafts[item.id]?.enabled ?? Boolean(item.retention_popup_enabled)}
+                      onChange={(event) =>
+                        setStaffRetentionDrafts((drafts) => ({
+                          ...drafts,
+                          [item.id]: {
+                            enabled: event.target.checked,
+                            text: drafts[item.id]?.text ?? item.retention_popup_text,
+                          },
+                        }))
+                      }
+                    />
+                    启用
+                  </label>
+                  <textarea
+                    value={staffRetentionDrafts[item.id]?.text ?? item.retention_popup_text}
+                    onChange={(event) =>
+                      setStaffRetentionDrafts((drafts) => ({
+                        ...drafts,
+                        [item.id]: {
+                          enabled: drafts[item.id]?.enabled ?? Boolean(item.retention_popup_enabled),
+                          text: event.target.value,
+                        },
+                      }))
+                    }
+                    placeholder="跟着客服操作完，至少可得1.5元。"
+                    maxLength={120}
+                  />
+                  <button type="button" onClick={() => void saveStaffRetentionPopup(item)}>保存弹框</button>
+                </div>
                 <span className={item.status === "active" ? "status-active" : "status-disabled"}>{item.status === "active" ? "启用" : "禁用"}</span>
                 <div className="row-actions staff-row-actions">
                   <button onClick={() => {
@@ -1149,6 +1262,8 @@ function App() {
   const [forwardSending, setForwardSending] = useState(false);
   const [viewingBundle, setViewingBundle] = useState<BundleBody | null>(null);
   const [viewingMedia, setViewingMedia] = useState<MediaBody | null>(null);
+  const [retentionPopup, setRetentionPopup] = useState<RetentionPopup | null>(null);
+  const [retentionNotice, setRetentionNotice] = useState<RetentionPopup | null>(null);
   const [mediaViewerUrl, setMediaViewerUrl] = useState("");
   const [mediaViewerError, setMediaViewerError] = useState("");
   const [mediaViewerLoading, setMediaViewerLoading] = useState(false);
@@ -1219,11 +1334,16 @@ function App() {
   useEffect(() => {
     const updateAppHeight = () => {
       if (mediaViewerHeightLockedRef.current) return;
-      const height = window.visualViewport?.height ?? window.innerHeight;
-      const width = window.visualViewport?.width ?? window.innerWidth;
+      const viewport = window.visualViewport;
+      const height = viewport?.height ?? window.innerHeight;
+      const width = viewport?.width ?? window.innerWidth;
+      const keyboardOffset = Math.max(0, Math.round(window.innerHeight - height - (viewport?.offsetTop ?? 0)));
       const isTouchDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+      const isMobileLayout = isTouchDevice && width <= 920;
       document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
-      document.documentElement.classList.toggle("force-mobile-layout", isTouchDevice && width <= 920);
+      document.documentElement.style.setProperty("--keyboard-offset", `${keyboardOffset}px`);
+      document.documentElement.classList.toggle("force-mobile-layout", isMobileLayout);
+      document.documentElement.classList.toggle("keyboard-open", isMobileLayout && keyboardOffset > 80);
     };
     updateAppHeight();
     window.addEventListener("resize", updateAppHeight);
@@ -1233,6 +1353,7 @@ function App() {
       window.removeEventListener("resize", updateAppHeight);
       window.visualViewport?.removeEventListener("resize", updateAppHeight);
       window.visualViewport?.removeEventListener("scroll", updateAppHeight);
+      document.documentElement.classList.remove("keyboard-open");
     };
   }, []);
 
@@ -1479,7 +1600,12 @@ function App() {
       void loadConversations(currentUser.id).catch(handleSessionError);
     });
     setSocket(nextSocket);
-    void Promise.all([loadUsers(currentUser.id), loadConversations(currentUser.id), loadQuickReplies(currentUser)])
+    void Promise.all([
+      loadUsers(currentUser.id),
+      loadConversations(currentUser.id),
+      loadQuickReplies(currentUser),
+      loadRetentionNotice(currentUser.id),
+    ])
       .catch(handleSessionError);
     return () => {
       nextSocket.disconnect();
@@ -1604,6 +1730,11 @@ function App() {
   async function loadUsers(userId: number) {
     const result = await api<{ users: User[] }>(`/api/users?userId=${userId}`);
     setUsers(result.users);
+  }
+
+  async function loadRetentionNotice(userId: number) {
+    const result = await api<{ retentionNotice: RetentionPopup | null }>(`/api/users/${userId}/retention-notice`);
+    setRetentionNotice(result.retentionNotice);
   }
 
   async function loadConversations(userId: number) {
@@ -2046,6 +2177,18 @@ function App() {
     setToolPanelOpen(false);
     setSelectedMessageIds([]);
     setActionMenu(null);
+    window.setTimeout(() => {
+      window.scrollTo(0, 0);
+      scrollToBottom("auto");
+    }, 80);
+  }
+
+  function blurComposer() {
+    window.setTimeout(() => {
+      if (document.activeElement === composerInputRef.current) return;
+      document.documentElement.classList.remove("keyboard-open");
+      window.scrollTo(0, 0);
+    }, 120);
   }
 
   function toggleToolPanel() {
@@ -2204,6 +2347,21 @@ function App() {
     });
     setActionMenu(null);
     openForwardModal(mode);
+  }
+
+  function startForwardFromSelection(mode: ForwardMode) {
+    if (selectedMessageIds.length === 0) return;
+    setActionMenu(null);
+    setToolPanelOpen(false);
+    setQuickPanelOpen(false);
+    openForwardModal(mode);
+  }
+
+  function cancelMessageSelection() {
+    setSelectedMessageIds([]);
+    setForwardMode(null);
+    setForwardTargetIds([]);
+    setActionMenu(null);
   }
 
   function beginRemarkEditing(conversation: Conversation) {
@@ -2429,14 +2587,18 @@ function App() {
     setQuickReplies([]);
     setQuickPanelOpen(false);
     setQuickPanelCollapsed(false);
+    setRetentionPopup(null);
+    setRetentionNotice(null);
   }
 
   if (!currentUser) {
     return (
       <Login
-        onLogin={(user, openConversationId) => {
+        onLogin={(user, openConversationId, nextRetentionPopup, nextRetentionNotice) => {
           setCurrentUser(user);
           setPendingConversationId(openConversationId ?? null);
+          setRetentionPopup(nextRetentionPopup ?? null);
+          setRetentionNotice(nextRetentionNotice ?? nextRetentionPopup ?? null);
         }}
       />
     );
@@ -2452,6 +2614,7 @@ function App() {
   });
   const totalUnread = conversations.reduce((sum, conversation) => sum + conversation.unread_count, 0);
   const isStaffUser = currentUser.phone.startsWith("staff:");
+  const isSelectingMessages = selectedMessageIds.length > 0;
   const canRemarkActiveConversation =
     isStaffUser && Boolean(activeConversation?.peer_id) && activeConversation?.peer_id !== currentUser.id;
   const canPromptNotification =
@@ -2674,6 +2837,12 @@ function App() {
                   <strong>正在上传文件...</strong>
                 </div>
               ) : null}
+              {retentionNotice ? (
+                <div className="retention-chat-notice">
+                  <strong>温馨提示</strong>
+                  <p>{retentionNotice.text}</p>
+                </div>
+              ) : null}
               {messages.map((message) => {
                 const mine = message.sender_id === currentUser.id;
                 const selected = selectedMessageIds.includes(message.id);
@@ -2778,6 +2947,20 @@ function App() {
                 <span>回到底部</span>
               </button>
             ) : null}
+            {isSelectingMessages ? (
+              <div className="selection-toolbar">
+                <button type="button" onClick={() => startForwardFromSelection("separate")}>
+                  逐条转发
+                </button>
+                <button type="button" className="selection-primary" onClick={() => startForwardFromSelection("bundle")}>
+                  合并转发
+                </button>
+                <span>已选 {selectedMessageIds.length} 条</span>
+                <button type="button" className="selection-cancel" onClick={cancelMessageSelection}>
+                  取消
+                </button>
+              </div>
+            ) : (
             <div className={`composer ${isStaffUser ? "has-quick" : ""}`}>
               {quoteTarget ? (
                 <div className="quote-composer-preview">
@@ -2811,6 +2994,7 @@ function App() {
                 value={draft}
                 onPointerDown={focusComposer}
                 onFocus={focusComposer}
+                onBlur={blurComposer}
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder="输入消息"
                 rows={1}
@@ -2850,7 +3034,8 @@ function App() {
                 <Plus size={24} />
               </button>
             </div>
-            {toolPanelOpen ? (
+            )}
+            {toolPanelOpen && !isSelectingMessages ? (
               <div className="tool-panel">
                 <ToolButton icon={<ImageIcon />} label="照片" onClick={() => !uploading && fileInputRef.current?.click()} />
                 <ToolButton icon={<Camera />} label="拍摄" onClick={() => !uploading && void openCamera("photo")} />
@@ -3021,6 +3206,17 @@ function App() {
           </section>
         </div>
       ) : null}
+      {retentionPopup ? (
+        <div className="modal-mask retention-mask">
+          <section className="retention-modal">
+            <strong>温馨提示</strong>
+            <p>{retentionPopup.text}</p>
+            <button type="button" onClick={() => setRetentionPopup(null)}>
+              知道了
+            </button>
+          </section>
+        </div>
+      ) : null}
       {viewingMedia ? (
         <div
           className="media-viewer"
@@ -3146,8 +3342,6 @@ function App() {
             ) : null}
             <button onClick={() => void copyMessageFromMenu()}>复制</button>
             <button onClick={quoteMessageFromMenu}>引用</button>
-            <button onClick={() => startForwardFromMenu("separate")}>逐条转发</button>
-            <button onClick={() => startForwardFromMenu("bundle")}>合并转发</button>
             <button
               onClick={() => {
                 toggleMessageSelection(actionMenu.messageId);

@@ -4,6 +4,7 @@
   --composer-height: 78px;
   --tool-panel-height: 220px;
   --app-height: 100dvh;
+  --keyboard-offset: 0px;
   --bg: #e9edf0;
   --panel: #f7f7f7;
   --panel-strong: #ffffff;
@@ -543,8 +544,8 @@ button {
 
 .simple-staff-table .admin-table-head,
 .simple-staff-table .admin-table-row {
-  min-width: 760px;
-  grid-template-columns: 56px minmax(140px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr) 70px 190px;
+  min-width: 1040px;
+  grid-template-columns: 56px minmax(120px, 0.8fr) minmax(110px, 0.7fr) minmax(120px, 0.8fr) minmax(300px, 1.7fr) 70px 190px;
 }
 
 .admin-avatar-picker {
@@ -556,6 +557,29 @@ button {
 
 .staff-row-actions {
   justify-content: flex-start;
+}
+
+.retention-config {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.retention-config textarea {
+  width: 100%;
+  min-height: 38px;
+  max-height: 72px;
+  resize: vertical;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  line-height: 1.45;
+}
+
+.retention-config button {
+  white-space: nowrap;
 }
 
 .link-table .admin-table-head,
@@ -1301,6 +1325,34 @@ button {
   font-weight: 600;
 }
 
+.retention-chat-notice {
+  width: min(640px, 100%);
+  margin: 0 auto 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 190, 64, 0.52);
+  border-left: 4px solid #ff9f0a;
+  border-radius: 8px;
+  background: #fff7e6;
+  box-shadow: 0 8px 22px rgba(214, 139, 18, 0.12);
+}
+
+.retention-chat-notice strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #9a5a00;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.retention-chat-notice p {
+  margin: 0;
+  color: #5f3b00;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1706,6 +1758,46 @@ button {
   height: 30px;
 }
 
+.selection-toolbar {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: rgba(247, 247, 247, 0.98);
+  flex: 0 0 auto;
+}
+
+.selection-toolbar button {
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 16px;
+  background: white;
+  color: #3c4650;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.selection-toolbar .selection-primary {
+  border-color: var(--green);
+  background: var(--green);
+  color: white;
+}
+
+.selection-toolbar span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: right;
+}
+
+.selection-toolbar .selection-cancel {
+  color: var(--danger);
+}
+
 .send-button {
   position: relative;
   z-index: 2;
@@ -2051,6 +2143,51 @@ button {
   padding: 20px;
   background: rgba(15, 23, 42, 0.28);
   z-index: 20;
+}
+
+.retention-mask {
+  background: rgba(0, 0, 0, 0.34);
+  z-index: 45;
+}
+
+.retention-modal {
+  width: min(328px, calc(100vw - 48px));
+  padding: 24px 22px 18px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 16px 46px rgba(0, 0, 0, 0.18);
+  text-align: center;
+}
+
+.retention-modal strong {
+  display: block;
+  color: #111;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.retention-modal p {
+  margin: 14px 0 22px;
+  color: #2f3338;
+  font-size: 15px;
+  line-height: 1.65;
+  word-break: break-word;
+}
+
+.retention-modal button {
+  width: 100%;
+  height: 42px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--green);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.retention-modal button:active {
+  filter: brightness(0.96);
 }
 
 .forward-modal {
@@ -2669,6 +2806,60 @@ html.force-mobile-layout {
 }
 
 @media (max-width: 920px) {
+  html,
+  body,
+  #root {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: var(--app-height);
+    max-height: var(--app-height);
+    overflow: hidden;
+  }
+
+  .login-shell {
+    height: var(--app-height);
+    min-height: var(--app-height);
+    align-items: start;
+    justify-items: center;
+    overflow-y: auto;
+    padding: max(18px, env(safe-area-inset-top)) 18px max(18px, env(safe-area-inset-bottom));
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .login-panel {
+    width: min(390px, 100%);
+    margin: 0 auto;
+  }
+
+  html.keyboard-open .login-shell {
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  html.keyboard-open .login-panel {
+    padding: 18px;
+  }
+
+  html.keyboard-open .brand-mark {
+    width: 44px;
+    height: 44px;
+    margin-bottom: 10px;
+  }
+
+  html.keyboard-open .login-panel h1 {
+    margin-bottom: 4px;
+    font-size: 22px;
+  }
+
+  html.keyboard-open .login-panel p {
+    margin-bottom: 12px;
+    line-height: 1.45;
+  }
+
+  html.keyboard-open .login-mode-tabs {
+    margin-bottom: 10px;
+  }
 
   .app-shell {
     position: fixed;
@@ -2849,6 +3040,33 @@ html.force-mobile-layout {
     padding: 12px 10px calc(22px + env(safe-area-inset-bottom));
   }
 
+  html.keyboard-open .composer {
+    padding-bottom: 10px;
+  }
+
+  html.keyboard-open .return-bottom-button {
+    bottom: 70px;
+  }
+
+  .selection-toolbar {
+    grid-template-columns: minmax(0, 1fr) 1fr 1fr auto;
+    gap: 8px;
+    min-height: 68px;
+    padding: 10px 10px calc(14px + env(safe-area-inset-bottom));
+  }
+
+  .selection-toolbar button {
+    height: 42px;
+    padding: 0 10px;
+    font-size: 14px;
+  }
+
+  .selection-toolbar span {
+    grid-column: 1;
+    grid-row: 1;
+    text-align: left;
+  }
+
   .composer textarea,
   .composer button {
     height: 46px;
@@ -2993,7 +3211,7 @@ html.force-mobile-layout {
 
   .simple-staff-table .admin-table-head,
   .simple-staff-table .admin-table-row {
-    min-width: 700px;
+    min-width: 1040px;
   }
 
   .link-table .admin-table-head,
