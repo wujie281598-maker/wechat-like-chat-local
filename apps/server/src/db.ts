@@ -176,6 +176,14 @@ if (!inviteColumnNames.has("deleted_at")) {
   db.prepare("ALTER TABLE invite_links ADD COLUMN deleted_at TEXT").run();
 }
 db.prepare("CREATE INDEX IF NOT EXISTS idx_invite_link_visits_link_time ON invite_link_visits(invite_link_id, visited_at)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_id ON messages(conversation_id, created_at, id)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS idx_messages_sender_conversation ON messages(sender_id, conversation_id)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS idx_conversation_members_conversation_user ON conversation_members(conversation_id, user_id)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS idx_conversation_members_user_conversation ON conversation_members(user_id, conversation_id)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS idx_customer_assignments_staff_user ON customer_assignments(staff_id, user_id)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS idx_customer_assignments_user_staff ON customer_assignments(user_id, staff_id)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS idx_staff_chat_user ON staff_accounts(chat_user_id)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS idx_users_status_sequence ON users(status, sequence_number)").run();
 
 const assignmentColumns = db.prepare("PRAGMA table_info(customer_assignments)").all() as Array<{ name: string }>;
 const assignmentColumnNames = new Set(assignmentColumns.map((column) => column.name));
@@ -1200,7 +1208,7 @@ export function getConversations(userId: number): ConversationRow[] {
       LEFT JOIN messages m ON m.id = (
         SELECT id FROM messages
         WHERE conversation_id = c.id
-        ORDER BY datetime(created_at) DESC, id DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT 1
       )
       LEFT JOIN conversation_members peer_cm ON peer_cm.conversation_id = c.id AND peer_cm.user_id != @userId
@@ -1225,7 +1233,7 @@ export function getConversations(userId: number): ConversationRow[] {
             AND peer.id = @peerId
           )
         )
-      ORDER BY cm.is_pinned DESC, datetime(COALESCE(m.created_at, c.created_at)) DESC
+      ORDER BY cm.is_pinned DESC, COALESCE(m.created_at, c.created_at) DESC, COALESCE(m.id, c.id) DESC
     `)
     .all(params) as ConversationRow[];
 }
@@ -1254,10 +1262,10 @@ export function getMessages(
         LEFT JOIN staff_accounts staff_avatar ON staff_avatar.chat_user_id = users.id AND staff_avatar.deleted_at IS NULL
         WHERE messages.conversation_id = @conversationId
           AND (@beforeMessageId IS NULL OR messages.id < @beforeMessageId)
-        ORDER BY datetime(messages.created_at) DESC, messages.id DESC
+        ORDER BY messages.created_at DESC, messages.id DESC
         LIMIT @pageSize
       )
-      ORDER BY datetime(created_at) ASC, id ASC
+      ORDER BY created_at ASC, id ASC
     `)
     .all({
       conversationId,
@@ -1352,7 +1360,7 @@ export function getMessagesByIds(messageIds: number[], userId: number): MessageR
       JOIN conversation_members cm ON cm.conversation_id = messages.conversation_id AND cm.user_id = ?
       WHERE messages.id IN (${placeholders})
         AND messages.revoked_at IS NULL
-      ORDER BY datetime(messages.created_at) ASC, messages.id ASC
+      ORDER BY messages.created_at ASC, messages.id ASC
     `)
     .all(userId, ...messageIds) as MessageRow[];
 }

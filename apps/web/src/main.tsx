@@ -35,6 +35,23 @@ const API_URL = window.location.origin;
 const MESSAGE_NOTIFY_DISMISSED_KEY = "doudou-im-message-notify-dismissed";
 const MESSAGE_PAGE_SIZE = 50;
 const MAX_VIDEO_UPLOAD_SIZE = 80 * 1024 * 1024;
+const INTERNAL_ERROR_MESSAGE_MAP: Record<string, string> = {
+  NOT_CONVERSATION_MEMBER: "当前会话不可用，请返回列表后重试",
+};
+
+function normalizeUserError(error: unknown, fallback = "操作失败，请稍后重试") {
+  const rawMessage = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const message = rawMessage.trim();
+  if (!message) return fallback;
+  if (INTERNAL_ERROR_MESSAGE_MAP[message]) return INTERNAL_ERROR_MESSAGE_MAP[message];
+  if (!/[\u4e00-\u9fff]/.test(message) && /[A-Za-z]/.test(message)) return fallback;
+  if (/^[A-Z][A-Z0-9_:-]{2,}$/.test(message)) return fallback;
+  if (/Error:|stack|SQLITE_|SQLITE_CONSTRAINT|ENOENT|ECONN|fetch failed|NetworkError|Failed to fetch|Unexpected token/i.test(message)) {
+    return fallback;
+  }
+  return message;
+}
+
 function makeClientId(userId: number) {
   const randomUuid = globalThis.crypto?.randomUUID?.();
   if (randomUuid) return `${userId}-${Date.now()}-${randomUuid}`;
@@ -236,9 +253,16 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error ?? "请求失败");
-  return data as T;
+  const text = await response.text();
+  let data: { error?: unknown } | null = null;
+  try {
+    data = text ? (JSON.parse(text) as { error?: unknown }) : null;
+  } catch {
+    if (!response.ok) throw new Error("请求失败");
+    throw new Error("数据加载失败，请刷新后重试");
+  }
+  if (!response.ok) throw new Error(normalizeUserError(data?.error ?? response.statusText ?? "请求失败", "请求失败"));
+  return (data ?? {}) as T;
 }
 
 async function adminApi<T>(path: string, token: string, options?: RequestInit): Promise<T> {
@@ -250,9 +274,16 @@ async function adminApi<T>(path: string, token: string, options?: RequestInit): 
     },
     ...options,
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error ?? "请求失败");
-  return data as T;
+  const text = await response.text();
+  let data: { error?: unknown } | null = null;
+  try {
+    data = text ? (JSON.parse(text) as { error?: unknown }) : null;
+  } catch {
+    if (!response.ok) throw new Error("请求失败");
+    throw new Error("数据加载失败，请刷新后重试");
+  }
+  if (!response.ok) throw new Error(normalizeUserError(data?.error ?? response.statusText ?? "请求失败", "请求失败"));
+  return (data ?? {}) as T;
 }
 
 function formatTime(value: string | null) {
@@ -338,7 +369,7 @@ function userUploadErrorMessage(error: unknown, fallback = "上传失败，请�
   if (/ffmpeg|encoder|libx264|spawn|ENOENT|\/uploads|\\uploads|configuration:|Input #|Output #/i.test(message)) {
     return "视频处理失败，请换个视频或压缩后重试";
   }
-  return message.length > 80 ? fallback : message;
+  return normalizeUserError(message, fallback);
 }
 
 function isVideoFile(file: File | { name?: string; type?: string }) {
@@ -528,7 +559,7 @@ function Login({
       const retentionNotice = "retentionNotice" in result ? result.retentionNotice : null;
       onLogin(result.user, openConversationId, retentionPopup, retentionNotice);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "登录失败");
+      setError(normalizeUserError(requestError, "登录失败"));
     } finally {
       setLoading(false);
     }
@@ -635,15 +666,16 @@ function AdminApp() {
         ),
       );
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "加载失败");
+      setError(normalizeUserError(requestError, "加载失败"));
       localStorage.removeItem("local-chat-admin-token");
       setToken("");
     }
   }
 
   function showError(message: string) {
-    setError(message);
-    window.alert(message);
+    const nextMessage = normalizeUserError(message);
+    setError(nextMessage);
+    window.alert(nextMessage);
   }
 
   async function login(event: React.FormEvent) {
@@ -658,7 +690,7 @@ function AdminApp() {
       setToken(result.token);
       setPassword("");
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "登录失败");
+      showError(normalizeUserError(requestError, "登录失败"));
     }
   }
 
@@ -674,7 +706,7 @@ function AdminApp() {
       setSettingsDraft(result.settings);
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "保存失败");
+      showError(normalizeUserError(requestError, "保存失败"));
     } finally {
       setSaving(false);
     }
@@ -696,7 +728,7 @@ function AdminApp() {
       setStaffForm({ username: "", password: "", displayName: "" });
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "创建失败");
+      showError(normalizeUserError(requestError, "创建失败"));
     }
   }
 
@@ -710,7 +742,7 @@ function AdminApp() {
       });
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "更新失败");
+      showError(normalizeUserError(requestError, "更新失败"));
     }
   }
 
@@ -728,7 +760,7 @@ function AdminApp() {
       await loadOverview();
       window.alert("弹框配置已保存");
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "保存失败");
+      showError(normalizeUserError(requestError, "保存失败"));
     }
   }
 
@@ -739,7 +771,7 @@ function AdminApp() {
       await adminApi<{ ok: true }>(`/api/admin/staff/${staff.id}`, token, { method: "DELETE" });
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "删除失败");
+      showError(normalizeUserError(requestError, "删除失败"));
     }
   }
 
@@ -754,13 +786,20 @@ function AdminApp() {
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
       }).then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error ?? "上传失败");
+        const text = await response.text();
+        let data: { error?: unknown } = {};
+        try {
+          data = text ? (JSON.parse(text) as { error?: unknown }) : {};
+        } catch {
+          if (!response.ok) throw new Error("上传失败");
+          throw new Error("数据加载失败，请刷新后重试");
+        }
+        if (!response.ok) throw new Error(normalizeUserError(data.error, "上传失败"));
         return data;
       });
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "上传失败");
+      showError(normalizeUserError(requestError, "上传失败"));
     } finally {
       if (staffAvatarInputRef.current) staffAvatarInputRef.current.value = "";
     }
@@ -784,7 +823,7 @@ function AdminApp() {
       setEditingLinkId(null);
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : editingLinkId ? "修改失败" : "创建失败");
+      showError(normalizeUserError(requestError, editingLinkId ? "修改失败" : "创建失败"));
     }
   }
 
@@ -814,7 +853,7 @@ function AdminApp() {
       });
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "更新失败");
+      showError(normalizeUserError(requestError, "更新失败"));
     }
   }
 
@@ -825,7 +864,7 @@ function AdminApp() {
       await adminApi<{ ok: true }>(`/api/admin/invite-links/${link.id}`, token, { method: "DELETE" });
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "删除失败");
+      showError(normalizeUserError(requestError, "删除失败"));
     }
   }
 
@@ -862,7 +901,7 @@ function AdminApp() {
       });
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "更新失败");
+      showError(normalizeUserError(requestError, "更新失败"));
     }
   }
 
@@ -879,7 +918,7 @@ function AdminApp() {
       setSelectedCustomerIds([]);
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : `批量${actionText}失败`);
+      showError(normalizeUserError(requestError, `批量${actionText}失败`));
     }
   }
 
@@ -895,7 +934,7 @@ function AdminApp() {
       setSelectedCustomerIds([]);
       await loadOverview();
     } catch (requestError) {
-      showError(requestError instanceof Error ? requestError.message : "批量删除失败");
+      showError(normalizeUserError(requestError, "批量删除失败"));
     }
   }
 
@@ -1339,6 +1378,7 @@ function App() {
   const mediaViewerCloseTimerRef = useRef<number | null>(null);
   const mediaViewerObjectUrlRef = useRef("");
   const mediaViewerVideoCleanupRef = useRef<(() => void) | null>(null);
+  const conversationRefreshTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const updateAppHeight = () => {
@@ -1558,7 +1598,7 @@ function App() {
   }
 
   function handleSessionError(error: unknown) {
-    const message = error instanceof Error ? error.message : "账号不可用";
+    const message = normalizeUserError(error, "账号不可用");
     if (message.includes("未匹配专属客服")) {
       forceLogout("未匹配专属客服");
       return;
@@ -1589,29 +1629,35 @@ function App() {
           read: false,
           incrementUnread: message.sender_id !== currentUser.id,
         });
-        if (!updated) void loadConversations(currentUser.id).catch(handleSessionError);
+        if (!updated) {
+          scheduleConversationListRefresh();
+        }
       }
     });
     nextSocket.on("message:changed", (message: ChatMessage) => {
       if (message.conversation_id === activeConversationIdRef.current) {
-        void loadMessages(message.conversation_id).catch(handleSessionError);
+        void refreshActiveConversation();
       }
-      void loadConversations(currentUser.id).catch(handleSessionError);
+      const updated = updateConversationWithMessage(message, {
+        read: message.conversation_id === activeConversationIdRef.current,
+        incrementUnread: false,
+      });
+      if (!updated) scheduleConversationListRefresh();
     });
     nextSocket.on("conversation:changed", ({ conversationId }: { conversationId: number }) => {
       if (conversationId === activeConversationIdRef.current) {
-        void loadConversations(currentUser.id).catch(handleSessionError);
+        void refreshActiveConversation();
         return;
       }
-      void loadConversations(currentUser.id).catch(handleSessionError);
+      scheduleConversationListRefresh();
     });
     nextSocket.on("presence:changed", () => {
-      void loadConversations(currentUser.id).catch(handleSessionError);
+      scheduleConversationListRefresh(1200);
     });
     setSocket(nextSocket);
     void Promise.all([
       loadUsers(currentUser.id),
-      loadConversations(currentUser.id),
+      loadConversationList(),
       loadQuickReplies(currentUser),
       loadRetentionNotice(currentUser.id),
     ])
@@ -1780,6 +1826,7 @@ function App() {
       if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
       if (mediaViewerRecoverTimerRef.current) window.clearTimeout(mediaViewerRecoverTimerRef.current);
       if (mediaViewerCloseTimerRef.current) window.clearTimeout(mediaViewerCloseTimerRef.current);
+      if (conversationRefreshTimerRef.current) window.clearTimeout(conversationRefreshTimerRef.current);
     };
   }, []);
 
@@ -1848,6 +1895,35 @@ function App() {
     }
   }
 
+  async function loadConversationList() {
+    const user = currentUserRef.current;
+    if (!user) return;
+    await loadConversations(user.id);
+  }
+
+  async function loadActiveConversation() {
+    const conversationId = activeConversationIdRef.current;
+    const user = currentUserRef.current;
+    if (!conversationId || !user) return;
+    await loadMessages(conversationId, { showSwitching: false });
+  }
+
+  function refreshConversationList() {
+    return loadConversationList().catch(handleSessionError);
+  }
+
+  function scheduleConversationListRefresh(delay = 350) {
+    if (conversationRefreshTimerRef.current) return;
+    conversationRefreshTimerRef.current = window.setTimeout(() => {
+      conversationRefreshTimerRef.current = null;
+      void refreshConversationList();
+    }, delay);
+  }
+
+  function refreshActiveConversation() {
+    return loadActiveConversation().catch(handleSessionError);
+  }
+
   async function loadQuickReplies(user: User) {
     if (!user.phone.startsWith("staff:")) {
       setQuickReplies([]);
@@ -1865,7 +1941,7 @@ function App() {
     });
     openConversation(result.conversationId);
     setMode("chats");
-    await loadConversations(currentUser.id);
+    await loadConversationList();
   }
 
   async function loadMessages(
@@ -1909,7 +1985,6 @@ function App() {
         window.setTimeout(() => scrollToBottom("auto"), 0);
         window.setTimeout(() => scrollToBottom("auto"), 220);
       }
-      if (!options.prepend) await loadConversations(currentUser.id);
       return result.messages;
     } finally {
       if (loadSeq === messageLoadSeqRef.current) setMessagesLoading(false);
@@ -1956,7 +2031,7 @@ function App() {
       updateConversationWithMessage(result.message, { read: true, incrementUnread: false });
       scrollToBottom("smooth");
     } catch (error) {
-      setNotice(error instanceof Error ? `发送失败：${error.message}` : "发送失败");
+      setNotice(`发送失败：${normalizeUserError(error, "请检查网络后重试")}`);
       setDraft(body);
       setQuoteTarget(quoteTarget);
     } finally {
@@ -1991,7 +2066,7 @@ function App() {
       method: "PATCH",
       body: JSON.stringify({ userId: currentUser.id, pinned: !conversation.is_pinned }),
     });
-    await loadConversations(currentUser.id);
+    await loadConversationList();
   }
 
   async function deleteConversationFriend(conversation: Conversation) {
@@ -2006,10 +2081,10 @@ function App() {
       setConversationMenu(null);
       setSwipedConversationId(null);
       await loadUsers(currentUser.id);
-      await loadConversations(currentUser.id);
+      await loadConversationList();
       setNotice("已删除好友");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "删除好友失败");
+      setNotice(normalizeUserError(error, "删除好友失败"));
     }
   }
 
@@ -2022,12 +2097,11 @@ function App() {
       });
       setConversationMenu(null);
       setEditingRemark(null);
-      await loadUsers(currentUser.id);
-      await loadConversations(currentUser.id);
-      if (activeConversationId === conversation.id) await loadMessages(conversation.id);
+      await loadConversationList();
+      if (activeConversationId === conversation.id) await loadActiveConversation();
       setNotice("备注已更新");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "备注失败");
+      setNotice(normalizeUserError(error, "备注失败"));
     }
   }
 
@@ -2100,14 +2174,21 @@ function App() {
           method: "POST",
           body: formData,
         });
-        const data = (await response.json()) as { message?: ChatMessage; error?: string };
-        if (!response.ok) throw new Error(data.error ?? "上传失败");
+        const text = await response.text();
+        let data: { message?: ChatMessage; error?: unknown } = {};
+        try {
+          data = text ? (JSON.parse(text) as { message?: ChatMessage; error?: unknown }) : {};
+        } catch {
+          if (!response.ok) throw new Error("上传失败");
+          throw new Error("上传完成后数据读取失败，请刷新后查看");
+        }
+        if (!response.ok) throw new Error(normalizeUserError(data.error, "上传失败"));
         if (data.message) upsertMessage(data.message);
         uploaded = true;
       }
       if (uploaded) {
         setNotice("已发送");
-        void loadConversations(currentUser.id).catch(handleSessionError);
+        void refreshConversationList();
         scrollToBottom("smooth");
       }
       if (uploaded && source === "capture") closeCamera();
@@ -2156,10 +2237,17 @@ function App() {
         method: "POST",
         body: formData,
       });
-      const data = (await response.json()) as { message?: ChatMessage; error?: string };
-      if (!response.ok) throw new Error(data.error ?? "上传失败");
+      const text = await response.text();
+      let data: { message?: ChatMessage; error?: unknown } = {};
+      try {
+        data = text ? (JSON.parse(text) as { message?: ChatMessage; error?: unknown }) : {};
+      } catch {
+        if (!response.ok) throw new Error("上传失败");
+        throw new Error("上传完成后数据读取失败，请刷新后查看");
+      }
+      if (!response.ok) throw new Error(normalizeUserError(data.error, "上传失败"));
       if (data.message) upsertMessage(data.message);
-      void loadConversations(currentUser.id).catch(handleSessionError);
+      void refreshConversationList();
       closeCamera();
     } catch (error) {
       setNotice(userUploadErrorMessage(error));
@@ -2190,7 +2278,7 @@ function App() {
         }
       }, 0);
     } catch (error) {
-      setCameraError(error instanceof Error ? error.message : "无法打开摄像头，请允许浏览器摄像头权限");
+      setCameraError(normalizeUserError(error, "无法打开摄像头，请允许浏览器摄像头权限"));
     }
   }
 
@@ -2310,7 +2398,7 @@ function App() {
     const body = reply.content.trim();
     if (!body) return;
     try {
-      await api<{ message: ChatMessage }>(`/api/conversations/${activeConversationId}/messages`, {
+      const result = await api<{ message: ChatMessage }>(`/api/conversations/${activeConversationId}/messages`, {
         method: "POST",
         body: JSON.stringify({
           userId: currentUser.id,
@@ -2318,12 +2406,12 @@ function App() {
           clientId: makeClientId(currentUser.id),
         }),
       });
-      await loadMessages(activeConversationId);
-      await loadConversations(currentUser.id);
+      upsertMessage(result.message);
+      updateConversationWithMessage(result.message, { read: true, incrementUnread: false });
       scrollToBottom("smooth");
       setNotice("已发送");
     } catch (error) {
-      setNotice(error instanceof Error ? `发送失败：${error.message}` : "发送失败");
+      setNotice(`发送失败：${normalizeUserError(error, "请检查网络后重试")}`);
     }
   }
 
@@ -2345,7 +2433,7 @@ function App() {
       await loadQuickReplies(currentUser);
       setNotice(quickForm.id ? "快捷语已更新" : "快捷语已添加");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "快捷语保存失败");
+      setNotice(normalizeUserError(error, "快捷语保存失败"));
     }
   }
 
@@ -2357,7 +2445,7 @@ function App() {
       await loadQuickReplies(currentUser);
       setNotice("快捷语已删除");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "快捷语删除失败");
+      setNotice(normalizeUserError(error, "快捷语删除失败"));
     }
   }
 
@@ -2371,7 +2459,7 @@ function App() {
       });
       setQuickReplies(result.quickReplies);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "快捷语排序失败");
+      setNotice(normalizeUserError(error, "快捷语排序失败"));
       await loadQuickReplies(currentUser);
     }
   }
@@ -2413,9 +2501,9 @@ function App() {
       setNotice("已撤回");
       setActionMenu(null);
       setSelectedMessageIds([]);
-      if (activeConversationId) await loadMessages(activeConversationId);
+      if (activeConversationId) await loadActiveConversation();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "撤回失败");
+      setNotice(normalizeUserError(error, "撤回失败"));
     }
   }
 
@@ -2488,7 +2576,7 @@ function App() {
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 800);
       setNotice("已保存");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "保存失败");
+      setNotice(normalizeUserError(error, "保存失败"));
     }
   }
 
@@ -2655,7 +2743,7 @@ function App() {
       await writeClipboardText(text);
       setNotice("已复制");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "复制失败");
+      setNotice(normalizeUserError(error, "复制失败"));
     } finally {
       setActionMenu(null);
     }
@@ -2721,10 +2809,10 @@ function App() {
       setForwardMode(null);
       setForwardTargetIds([]);
       setActionMenu(null);
-      await loadConversations(currentUser.id);
-      if (activeConversationId && targetIds.includes(activeConversationId)) await loadMessages(activeConversationId);
+      await loadConversationList();
+      if (activeConversationId && targetIds.includes(activeConversationId)) await loadActiveConversation();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "转发失败");
+      setNotice(normalizeUserError(error, "转发失败"));
     } finally {
       setForwardSending(false);
     }
@@ -2741,6 +2829,10 @@ function App() {
     setQuickPanelCollapsed(false);
     setRetentionPopup(null);
     setRetentionNotice(null);
+    if (conversationRefreshTimerRef.current) {
+      window.clearTimeout(conversationRefreshTimerRef.current);
+      conversationRefreshTimerRef.current = null;
+    }
   }
 
   if (!currentUser) {
