@@ -778,6 +778,31 @@ app.get("/api/users/:id/retention-notice", (request, response) => {
   }
 });
 
+app.post("/api/users/:id/invite-assignment", (request, response) => {
+  const userId = Number(request.params.id);
+  const parsed = z.object({ inviteCode: z.string().trim().max(40) }).safeParse(request.body);
+  if (!userId || !parsed.success || !parsed.data.inviteCode) {
+    response.status(400).json({ error: "缺少邀请信息" });
+    return;
+  }
+
+  try {
+    const inviteAssignment = assignCustomerToInvite(userId, parsed.data.inviteCode);
+    const serviceChatUserId = inviteAssignment?.owner.chat_user_id ?? getAssignedServiceChatUserId(userId);
+    if (!serviceChatUserId) {
+      response.status(403).json({ error: "未匹配专属客服" });
+      return;
+    }
+    const openConversationId = getOrCreateDirectConversation(userId, serviceChatUserId);
+    response.json({
+      openConversationId,
+      retentionNotice: getCustomerRetentionNotice(userId),
+    });
+  } catch (error) {
+    response.status(403).json({ error: error instanceof Error ? error.message : "未匹配专属客服" });
+  }
+});
+
 app.get("/api/conversations", (request, response) => {
   const userId = Number(request.query.userId);
   if (!userId) {

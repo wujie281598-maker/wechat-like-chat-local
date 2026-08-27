@@ -1356,6 +1356,75 @@ button {
   word-break: break-word;
 }
 
+.customer-retention-bar {
+  width: min(760px, calc(100% - 40px));
+  margin: 10px auto 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 190, 64, 0.52);
+  border-left: 4px solid #ff9f0a;
+  border-radius: 8px;
+  background: #fff7e6;
+  box-shadow: 0 6px 16px rgba(214, 139, 18, 0.1);
+  flex: 0 0 auto;
+}
+
+.customer-retention-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.customer-retention-copy strong {
+  color: #7a4700;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.customer-retention-copy span {
+  color: #775012;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.customer-retention-copy p {
+  margin: 2px 0 0;
+  color: #5f3b00;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.customer-retention-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.customer-retention-actions button {
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 11px;
+  background: var(--green);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.customer-retention-actions button:active {
+  background: var(--green-dark);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -3012,6 +3081,36 @@ html.force-mobile-layout {
   .retention-chat-notice p {
     font-size: 13px;
     line-height: 1.45;
+  }
+
+  .customer-retention-bar {
+    width: calc(100% - 20px);
+    grid-template-columns: 1fr;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 9px 10px;
+  }
+
+  .customer-retention-copy strong {
+    font-size: 13px;
+  }
+
+  .customer-retention-copy span,
+  .customer-retention-copy p {
+    font-size: 12px;
+    line-height: 1.42;
+  }
+
+  .customer-retention-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    gap: 8px;
+  }
+
+  .customer-retention-actions button {
+    width: 100%;
+    min-width: 0;
   }
 
   .return-bottom-button {

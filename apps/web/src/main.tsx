@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { io, Socket } from "socket.io-client";
 import {
@@ -6,6 +6,7 @@ import {
   Camera,
   Check,
   ChevronDown,
+  Copy,
   Download,
   File as FileIcon,
   FileStack,
@@ -13,17 +14,17 @@ import {
   ImageIcon,
   MessageCircle,
   MessageSquareText,
+  PanelRightClose,
+  PanelRightOpen,
   Pin,
   PinOff,
   Pencil,
   Play,
+  Plus,
   RefreshCw,
   Search,
   Send,
   SendHorizontal,
-  PanelRightClose,
-  PanelRightOpen,
-  Plus,
   UserPlus,
   UsersRound,
   X,
@@ -32,12 +33,41 @@ import {
 import "./styles.css";
 
 const API_URL = window.location.origin;
-const MESSAGE_NOTIFY_DISMISSED_KEY = "doudou-im-message-notify-dismissed";
+const INVITE_CODE_STORAGE_KEY = "doudou-im-invite-code";
 const MESSAGE_PAGE_SIZE = 50;
 const MAX_VIDEO_UPLOAD_SIZE = 80 * 1024 * 1024;
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
+
+function currentInviteCode() {
+  const fromUrl = new URLSearchParams(window.location.search).get("invite")?.trim() ?? "";
+  if (fromUrl) {
+    localStorage.setItem(INVITE_CODE_STORAGE_KEY, fromUrl);
+    return fromUrl;
+  }
+  const stored = localStorage.getItem(INVITE_CODE_STORAGE_KEY) ?? "";
+  if (stored && !window.location.pathname.startsWith("/admin")) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("invite", stored);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+  return stored;
+}
+
 const INTERNAL_ERROR_MESSAGE_MAP: Record<string, string> = {
   NOT_CONVERSATION_MEMBER: "当前会话不可用，请返回列表后重试",
 };
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // The app can still run if the browser blocks service worker registration.
+    });
+  });
+}
 
 function normalizeUserError(error: unknown, fallback = "操作失败，请稍后重试") {
   const rawMessage = error instanceof Error ? error.message : typeof error === "string" ? error : "";
@@ -498,7 +528,7 @@ function Login({
   const [phone, setPhone] = useState("");
   const [serviceUsername, setServiceUsername] = useState("");
   const [servicePassword, setServicePassword] = useState("");
-  const inviteCode = useMemo(() => new URLSearchParams(window.location.search).get("invite") ?? "", []);
+  const inviteCode = useMemo(() => currentInviteCode(), []);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -550,6 +580,7 @@ function Login({
               method: "POST",
               body: JSON.stringify({ phone, inviteCode: inviteCode || undefined }),
             });
+      if (inviteCode) localStorage.setItem(INVITE_CODE_STORAGE_KEY, inviteCode);
       localStorage.setItem("local-chat-user", JSON.stringify(result.user));
       const openConversationId =
         "openConversationId" in result && typeof result.openConversationId === "number"
@@ -1325,15 +1356,7 @@ function App() {
   const [cameraError, setCameraError] = useState("");
   const [recording, setRecording] = useState(false);
   const [notice, setNotice] = useState("");
-  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
-    () => {
-      if (!("Notification" in window)) return "unsupported";
-      return Notification.permission;
-    },
-  );
-  const [notificationPromptDismissed, setNotificationPromptDismissed] = useState(
-    () => localStorage.getItem(MESSAGE_NOTIFY_DISMISSED_KEY) === "1",
-  );
+  const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [uploading, setUploading] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
   const [returnBottomVisible, setReturnBottomVisible] = useState(false);
@@ -1368,7 +1391,6 @@ function App() {
   const sendButtonCleanupRef = useRef<(() => void) | null>(null);
   const highlightTimerRef = useRef<number | null>(null);
   const lastNotifiedMessageIdRef = useRef<number | null>(null);
-  const notificationPermissionRef = useRef<NotificationPermission | "unsupported">(notificationPermission);
   const hasMoreMessagesRef = useRef(false);
   const olderMessagesLoadingRef = useRef(false);
   const skipNextMessageAutoScrollRef = useRef(false);
@@ -1379,6 +1401,23 @@ function App() {
   const mediaViewerObjectUrlRef = useRef("");
   const mediaViewerVideoCleanupRef = useRef<(() => void) | null>(null);
   const conversationRefreshTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPromptEvent(event as BeforeInstallPromptEvent);
+    };
+    const handleAppInstalled = () => {
+      setInstallPromptEvent(null);
+      setNotice("已添加到主屏幕");
+    };
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleAppInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
+  }, []);
 
   useEffect(() => {
     const updateAppHeight = () => {
@@ -1433,37 +1472,58 @@ function App() {
   }, [olderMessagesLoading]);
 
   useEffect(() => {
-    notificationPermissionRef.current = notificationPermission;
-  }, [notificationPermission]);
-
-  useEffect(() => {
     const unreadTotal = conversations.reduce((sum, conversation) => sum + conversation.unread_count, 0);
-    document.title = unreadTotal > 0 ? `【您有${unreadTotal}条新消息】` : "抖抖IM";
+    if (unreadTotal <= 0) {
+      document.title = "抖抖IM";
+      return () => {
+        document.title = "抖抖IM";
+      };
+    }
+    let visible = true;
+    document.title = `【您有${unreadTotal}条新消息】`;
+    const timer = window.setInterval(() => {
+      visible = !visible;
+      document.title = visible ? `【您有${unreadTotal}条新消息】` : "抖抖IM";
+    }, 900);
     return () => {
+      window.clearInterval(timer);
       document.title = "抖抖IM";
     };
   }, [conversations]);
 
-  async function requestMessageNotifications() {
-    if (!("Notification" in window)) {
-      setNotificationPermission("unsupported");
-      setNotice("当前浏览器不支持消息通知");
-      return;
-    }
-    try {
-      const permission = await Notification.requestPermission();
-      setNotificationPermission(permission);
-      if (permission === "granted") {
-        localStorage.removeItem(MESSAGE_NOTIFY_DISMISSED_KEY);
-        setNotificationPromptDismissed(false);
-        setNotice("消息提醒已开启");
-      } else {
-        localStorage.setItem(MESSAGE_NOTIFY_DISMISSED_KEY, "1");
-        setNotificationPromptDismissed(true);
-        setNotice("未开启提醒，可稍后在浏览器设置里允许通知");
+  async function goAddToHomeScreen() {
+    if (installPromptEvent) {
+      try {
+        await installPromptEvent.prompt();
+        const choice = await installPromptEvent.userChoice;
+        setInstallPromptEvent(null);
+        if (choice.outcome === "accepted") {
+          setNotice("已添加到主屏幕");
+          return;
+        }
+        setNotice("可以先继续聊天，稍后再保存链接");
+        return;
+      } catch {
+        setNotice("当前浏览器不支持一键添加，请复制链接保存");
+        return;
       }
-    } catch {
-      setNotice("开启提醒失败，请检查浏览器通知权限");
+    }
+    setNotice("当前浏览器不支持一键添加，请复制链接保存");
+  }
+
+  function customerChatLink() {
+    const inviteCode = currentInviteCode();
+    const url = new URL(window.location.href);
+    if (inviteCode) url.searchParams.set("invite", inviteCode);
+    return url.toString();
+  }
+
+  async function copyCustomerChatLink() {
+    try {
+      await writeClipboardText(customerChatLink());
+      setNotice("专属聊天链接已复制");
+    } catch (error) {
+      setNotice(normalizeUserError(error, "复制失败，请长按地址栏复制链接"));
     }
   }
 
@@ -1478,17 +1538,6 @@ function App() {
     setNotice(`${sender} 发来新消息`);
     navigator.vibrate?.([80, 40, 80]);
 
-    if (notificationPermissionRef.current !== "granted" || !document.hidden || !("Notification" in window)) return;
-    const notification = new Notification("抖抖IM新消息", {
-      body: `${sender}：${body}`,
-      tag: `doudou-im-${message.conversation_id}`,
-      silent: false,
-    });
-    notification.onclick = () => {
-      window.focus();
-      setPendingConversationId(message.conversation_id);
-      notification.close();
-    };
   }
 
   useEffect(() => {
@@ -1498,6 +1547,16 @@ function App() {
     openConversation(nextConversationId);
     setMode("chats");
   }, [pendingConversationId, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const conversationId = Number(new URLSearchParams(window.location.search).get("conversation"));
+    if (!Number.isInteger(conversationId) || conversationId <= 0) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("conversation");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    setPendingConversationId(conversationId);
+  }, [currentUser]);
 
   useEffect(() => {
     draftRef.current = draft;
@@ -1656,11 +1715,12 @@ function App() {
     });
     setSocket(nextSocket);
     void Promise.all([
+      syncInviteAssignment(currentUser),
       loadUsers(currentUser.id),
-      loadConversationList(),
       loadQuickReplies(currentUser),
       loadRetentionNotice(currentUser.id),
     ])
+      .then(() => loadConversationList())
       .catch(handleSessionError);
     return () => {
       nextSocket.disconnect();
@@ -1873,6 +1933,30 @@ function App() {
   async function loadRetentionNotice(userId: number) {
     const result = await api<{ retentionNotice: RetentionPopup | null }>(`/api/users/${userId}/retention-notice`);
     setRetentionNotice(result.retentionNotice);
+  }
+
+  async function syncInviteAssignment(user: User) {
+    if (user.phone.startsWith("staff:")) return null;
+    const inviteCode = currentInviteCode();
+    if (!inviteCode) return null;
+    try {
+      const result = await api<{ openConversationId: number | null; retentionNotice: RetentionPopup | null }>(
+        `/api/users/${user.id}/invite-assignment`,
+        {
+          method: "POST",
+          body: JSON.stringify({ inviteCode }),
+        },
+      );
+      setRetentionNotice(result.retentionNotice);
+      if (result.openConversationId) {
+        autoOpenedCustomerConversationRef.current = true;
+        setPendingConversationId(result.openConversationId);
+      }
+      return result.openConversationId;
+    } catch (error) {
+      setNotice(normalizeUserError(error, "未匹配到专属客服，请重新扫码进入"));
+      return null;
+    }
   }
 
   async function loadConversations(userId: number) {
@@ -2861,8 +2945,7 @@ function App() {
   const isSelectingMessages = selectedMessageIds.length > 0;
   const canRemarkActiveConversation =
     isStaffUser && Boolean(activeConversation?.peer_id) && activeConversation?.peer_id !== currentUser.id;
-  const canPromptNotification =
-    notificationPermission === "default" && !notificationPromptDismissed;
+  const canUseInstallPrompt = Boolean(installPromptEvent) && !isStaffUser;
 
   return (
     <main className={`app-shell ${activeConversation ? "chat-open" : ""} ${toolPanelOpen ? "tool-open" : ""} ${quickPanelOpen ? "quick-open" : ""}`}>
@@ -2878,12 +2961,6 @@ function App() {
           <button className="ghost-button" onClick={logout}>
             退出
           </button>
-          {canPromptNotification ? (
-            <button className="notify-button" type="button" onClick={() => void requestMessageNotifications()}>
-              <Bell size={15} />
-              开启提醒
-            </button>
-          ) : null}
         </header>
 
         <div className="search-box">
@@ -3062,7 +3139,14 @@ function App() {
                 </button>
               </div>
             </header>
-            {retentionNotice ? (
+            {!isStaffUser ? (
+              <CustomerRetentionBar
+                retentionText={retentionNotice?.text ?? ""}
+                canInstall={canUseInstallPrompt}
+                onInstall={() => void goAddToHomeScreen()}
+                onCopy={() => void copyCustomerChatLink()}
+              />
+            ) : retentionNotice ? (
               <div className="retention-chat-notice">
                 <strong>温馨提示</strong>
                 <p>{retentionNotice.text}</p>
@@ -3710,6 +3794,39 @@ function App() {
   );
 }
 
+function CustomerRetentionBar({
+  retentionText,
+  canInstall,
+  onInstall,
+  onCopy,
+}: {
+  retentionText: string;
+  canInstall: boolean;
+  onInstall: () => void;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="customer-retention-bar">
+      <div className="customer-retention-copy">
+        <strong>请不要关闭页面，客服会在这里回复</strong>
+        <span>建议复制并收藏这个专属聊天链接，方便下次继续沟通。</span>
+        {retentionText ? <p>{retentionText}</p> : null}
+      </div>
+      <div className="customer-retention-actions">
+        <button type="button" onClick={onCopy}>
+          <Copy size={15} />
+          复制链接
+        </button>
+        {canInstall ? (
+          <button type="button" onClick={onInstall}>
+            添加桌面
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function ToolButton({ icon, label, onClick, disabled = false }: { icon: React.ReactNode; label: string; onClick?: () => void; disabled?: boolean }) {
   return (
     <button className="tool-button" type="button" onClick={onClick} disabled={disabled}>
@@ -3909,5 +4026,3 @@ function EmptyState({ icon, title, text }: { icon: React.ReactNode; title: strin
 }
 
 createRoot(document.getElementById("root")!).render(window.location.pathname.startsWith("/admin") ? <AdminApp /> : <App />);
-
-
