@@ -171,6 +171,7 @@ function emitNewMessage(message: ReturnType<typeof createMessage>) {
   for (const userId of getConversationMemberIds(message.conversation_id)) {
     io.to(`user:${userId}`).emit("message:new", message);
   }
+  io.emit("conversation:changed", { conversationId: message.conversation_id });
 }
 
 function sanitizeFfmpegError(error: unknown) {

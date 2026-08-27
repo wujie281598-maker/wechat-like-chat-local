@@ -1672,6 +1672,10 @@ function App() {
     nextSocket.emit("user:online", currentUser.id);
     nextSocket.on("connect", () => {
       nextSocket.emit("user:online", currentUser.id);
+      scheduleConversationListRefresh(0);
+      if (activeConversationIdRef.current) {
+        void refreshActiveConversation();
+      }
     });
     nextSocket.on("message:new", (message: ChatMessage) => {
       const isCurrentConversation = message.conversation_id === activeConversationIdRef.current;
@@ -1690,6 +1694,8 @@ function App() {
         });
         if (!updated) {
           scheduleConversationListRefresh();
+        } else if (message.sender_id !== currentUser.id) {
+          scheduleConversationListRefresh(800);
         }
       }
     });
@@ -1726,6 +1732,27 @@ function App() {
       nextSocket.disconnect();
     };
   }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const syncAfterResume = () => {
+      if (document.visibilityState === "hidden") return;
+      scheduleConversationListRefresh(0);
+      if (activeConversationIdRef.current) {
+        void refreshActiveConversation();
+      }
+      socket?.emit("user:online", currentUser.id);
+    };
+
+    window.addEventListener("focus", syncAfterResume);
+    window.addEventListener("online", syncAfterResume);
+    document.addEventListener("visibilitychange", syncAfterResume);
+    return () => {
+      window.removeEventListener("focus", syncAfterResume);
+      window.removeEventListener("online", syncAfterResume);
+      document.removeEventListener("visibilitychange", syncAfterResume);
+    };
+  }, [currentUser, socket]);
 
   useEffect(() => {
     if (!socket || !activeConversationId) return;
