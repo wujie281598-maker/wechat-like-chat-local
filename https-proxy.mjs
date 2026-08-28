@@ -21,7 +21,9 @@ const DIST_DIR = process.env.DIST_DIR
 
 const backendUrl = new URL(BACKEND);
 const BACKEND_HOST = backendUrl.hostname;
-const BACKEND_PORT = Number(backendUrl.port);
+const BACKEND_PORT = Number(
+  backendUrl.port || (backendUrl.protocol === "https:" ? 443 : 80)
+);
 
 const SSL_KEY_PATH = process.env.SSL_KEY_PATH ?? "/opt/realtime-chat/cert/youshen.top.key";
 const SSL_CERT_PATH = process.env.SSL_CERT_PATH ?? "/opt/realtime-chat/cert/youshen.top_bundle.crt";
@@ -30,6 +32,45 @@ const options = {
   key: fs.readFileSync(SSL_KEY_PATH),
   cert: fs.readFileSync(SSL_CERT_PATH),
 };
+
+function isExpectedNetworkError(err) {
+  return (
+    err?.code === "ECONNRESET" ||
+    err?.code === "EPIPE" ||
+    err?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+    err?.code === "HPE_INVALID_EOF_STATE" ||
+    /socket hang up|client aborted|aborted|premature close/i.test(err?.message ?? "")
+  );
+}
+
+function logProxyError(scope, err) {
+  if (isExpectedNetworkError(err)) {
+    console.warn(`${scope}: client connection closed`);
+    return;
+  }
+  console.error(`${scope}:`, err?.message ?? err);
+}
+
+function safeJsonError(res, statusCode, message) {
+  if (res.destroyed || res.writableEnded) return;
+  try {
+    if (!res.headersSent) {
+      res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+    }
+    res.end(JSON.stringify({ error: message }));
+  } catch {
+    res.destroy();
+  }
+}
+
+function destroyQuietly(stream) {
+  if (!stream || stream.destroyed) return;
+  try {
+    stream.destroy();
+  } catch {
+    // Ignore cleanup errors caused by already closed client sockets.
+  }
+}
 
 // MIME 类型
 const mimeTypes = {
@@ -61,14 +102,35 @@ function proxyRequest(req, res) {
       headers: { ...req.headers, host: `${BACKEND_HOST}:${BACKEND_PORT}` },
     },
     (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      if (res.destroyed || res.writableEnded) {
+        destroyQuietly(proxyRes);
+        return;
+      }
+      res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+      proxyRes.on("error", (err) => {
+        logProxyError("Proxy response error", err);
+        destroyQuietly(res);
+      });
       proxyRes.pipe(res);
     }
   );
   proxyReq.on("error", (err) => {
-    console.error("Proxy error:", err.message);
-    res.writeHead(502, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "后端服务不可用" }));
+    logProxyError("Proxy request error", err);
+    safeJsonError(res, 502, "后端服务暂时不可用，请稍后再试");
+  });
+  req.on("aborted", () => {
+    destroyQuietly(proxyReq);
+  });
+  req.on("error", (err) => {
+    logProxyError("Client request error", err);
+    destroyQuietly(proxyReq);
+  });
+  res.on("close", () => {
+    if (!res.writableEnded) destroyQuietly(proxyReq);
+  });
+  res.on("error", (err) => {
+    logProxyError("Client response error", err);
+    destroyQuietly(proxyReq);
   });
   req.pipe(proxyReq);
 }
@@ -118,6 +180,7 @@ const server = https.createServer(options, (req, res) => {
 // WebSocket 升级（Socket.IO）
 server.on("upgrade", (req, socket, head) => {
   if (req.url.startsWith("/socket.io/")) {
+    let upgraded = false;
     const proxyReq = http.request({
       hostname: BACKEND_HOST,
       port: BACKEND_PORT,
@@ -125,7 +188,19 @@ server.on("upgrade", (req, socket, head) => {
       method: req.method,
       headers: req.headers,
     });
+    const closeUpgrade = (err) => {
+      if (err) logProxyError("WebSocket proxy error", err);
+      destroyQuietly(proxyReq);
+      destroyQuietly(socket);
+    };
+    socket.on("error", closeUpgrade);
+    socket.on("close", () => {
+      if (!upgraded) destroyQuietly(proxyReq);
+    });
     proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+      upgraded = true;
+      proxySocket.on("error", closeUpgrade);
+      proxySocket.on("close", () => destroyQuietly(socket));
       socket.write("HTTP/1.1 101 Switching Protocols\r\n");
       Object.entries(proxyRes.headers).forEach(([key, value]) => {
         socket.write(`${key}: ${value}\r\n`);
@@ -135,10 +210,51 @@ server.on("upgrade", (req, socket, head) => {
       proxySocket.pipe(socket);
       socket.pipe(proxySocket);
     });
-    proxyReq.on("error", () => socket.destroy());
-    if (head.length > 0) proxyReq.write(head);
-    proxyReq.end();
+    proxyReq.on("response", (proxyRes) => {
+      logProxyError(
+        "WebSocket upgrade rejected",
+        new Error(`backend returned ${proxyRes.statusCode}`)
+      );
+      destroyQuietly(proxyRes);
+      closeUpgrade();
+    });
+    proxyReq.on("error", closeUpgrade);
+    if (head.length > 0) {
+      proxyReq.end(head);
+    } else {
+      proxyReq.end();
+    }
+  } else {
+    destroyQuietly(socket);
   }
+});
+
+server.on("clientError", (err, socket) => {
+  logProxyError("HTTPS client error", err);
+  destroyQuietly(socket);
+});
+
+server.on("tlsClientError", (err, socket) => {
+  logProxyError("TLS client error", err);
+  destroyQuietly(socket);
+});
+
+process.on("uncaughtException", (err) => {
+  if (isExpectedNetworkError(err)) {
+    logProxyError("Ignored network exception", err);
+    return;
+  }
+  console.error("Uncaught exception:", err);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  if (isExpectedNetworkError(reason)) {
+    logProxyError("Ignored network rejection", reason);
+    return;
+  }
+  console.error("Unhandled rejection:", reason);
+  process.exit(1);
 });
 
 server.listen(PORT, "0.0.0.0", () => {
