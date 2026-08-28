@@ -1710,14 +1710,16 @@ function App() {
       if (!updated) scheduleConversationListRefresh();
     });
     nextSocket.on("conversation:changed", ({ conversationId }: { conversationId: number }) => {
-      if (conversationId === activeConversationIdRef.current) {
-        void refreshActiveConversation();
-        return;
-      }
-      scheduleConversationListRefresh();
+      scheduleConversationListRefresh(conversationId === activeConversationIdRef.current ? 600 : 350);
     });
-    nextSocket.on("presence:changed", () => {
-      scheduleConversationListRefresh(1200);
+    nextSocket.on("presence:changed", ({ userId, lastSeenAt }: { userId: number; online?: boolean; lastSeenAt?: string }) => {
+      const nextLastSeenAt = lastSeenAt ?? new Date().toISOString();
+      setUsers((current) => current.map((user) => (user.id === userId ? { ...user, last_seen_at: nextLastSeenAt } : user)));
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.peer_id === userId ? { ...conversation, peer_last_seen_at: nextLastSeenAt } : conversation,
+        ),
+      );
     });
     setSocket(nextSocket);
     void Promise.all([

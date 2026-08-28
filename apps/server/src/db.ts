@@ -1302,6 +1302,20 @@ export function getConversationMemberIds(conversationId: number): number[] {
   return rows.map((row) => row.user_id);
 }
 
+export function getRelatedConversationMemberIds(userId: number): number[] {
+  const rows = db
+    .prepare(`
+      SELECT DISTINCT cm2.user_id
+      FROM conversation_members cm1
+      JOIN conversation_members cm2 ON cm2.conversation_id = cm1.conversation_id
+      WHERE cm1.user_id = ?
+        AND cm1.deleted_at IS NULL
+        AND cm2.deleted_at IS NULL
+    `)
+    .all(userId) as Array<{ user_id: number }>;
+  return rows.map((row) => row.user_id);
+}
+
 export function markConversationRead(conversationId: number, userId: number) {
   assertActiveUser(userId);
   const result = db

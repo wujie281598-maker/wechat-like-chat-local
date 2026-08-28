@@ -39,6 +39,7 @@ import {
   getOrCreateUser,
   getOrCreateUserWithNickname,
   getQuickReplies,
+  getRelatedConversationMemberIds,
   getStaffById,
   getStaffPublicById,
   getUserByPhone,
@@ -167,11 +168,65 @@ app.get("/health", (_request, response) => {
   response.json({ ok: true });
 });
 
+const safeBusinessMessages = new Set([
+  "账号或密码不正确",
+  "后台账号已禁用",
+  "后台账号不存在",
+  "账号已被后台禁用",
+  "未匹配专属客服",
+  "只有客服账号可以登录聊天端",
+  "客服聊天身份不可用",
+  "没有权限",
+  "用户不存在",
+  "客服不存在",
+  "客户不属于当前客服",
+  "快捷语不存在",
+  "会话不存在",
+  "好友不存在",
+  "消息不存在",
+  "只能撤回自己发送的消息",
+  "没有可转发的消息",
+  "包含不能操作的账号",
+  "请选择客户",
+  "部分客户不存在",
+  "A1 是自动回复账号，不能禁用",
+  "客服账号不能在客户列表操作",
+  "只能设置客服头像",
+  "只能设置客服弹框",
+  "请输入弹框内容",
+  "只有客服可以备注客户",
+  "只有客服可以使用快捷语",
+  "只有客服可以配置快捷语",
+]);
+
+function sendError(response: express.Response, statusCode: number, fallback: string, error?: unknown) {
+  const rawMessage = error instanceof Error ? error.message : "";
+  if (rawMessage && !safeBusinessMessages.has(rawMessage)) {
+    console.error("[api-error]", rawMessage);
+  }
+  response.status(statusCode).json({ error: safeBusinessMessages.has(rawMessage) ? rawMessage : fallback });
+}
+
+function emitConversationChanged(conversationId: number) {
+  for (const userId of getConversationMemberIds(conversationId)) {
+    io.to(`user:${userId}`).emit("conversation:changed", { conversationId });
+  }
+}
+
+function emitPresenceChanged(userId: number) {
+  for (const memberId of getRelatedConversationMemberIds(userId)) {
+    io.to(`user:${memberId}`).emit("presence:changed", {
+      userId,
+      online: true,
+      lastSeenAt: new Date().toISOString(),
+    });
+  }
+}
+
 function emitNewMessage(message: ReturnType<typeof createMessage>) {
   for (const userId of getConversationMemberIds(message.conversation_id)) {
     io.to(`user:${userId}`).emit("message:new", message);
   }
-  io.emit("conversation:changed", { conversationId: message.conversation_id });
 }
 
 function sanitizeFfmpegError(error: unknown) {
@@ -424,7 +479,7 @@ function requireStaff(request: express.Request, response: express.Response, role
   try {
     return assertStaffAccess(staffId, roles);
   } catch (error) {
-    response.status(403).json({ error: error instanceof Error ? error.message : "没有权限" });
+    sendError(response, 403, "没有权限", error);
     return null;
   }
 }
@@ -439,7 +494,7 @@ app.post("/api/admin/login", (request, response) => {
     const staff = authenticateStaff(parsed.data.username, parsed.data.password);
     response.json({ token: makeStaffToken(staff.id), staff });
   } catch (error) {
-    response.status(401).json({ error: error instanceof Error ? error.message : "登录失败" });
+    sendError(response, 401, "登录失败", error);
   }
 });
 
@@ -462,7 +517,7 @@ app.post("/api/staff-chat/login", (request, response) => {
     }
     response.json({ user });
   } catch (error) {
-    response.status(401).json({ error: error instanceof Error ? error.message : "登录失败" });
+    sendError(response, 401, "登录失败", error);
   }
 });
 
@@ -507,7 +562,7 @@ app.post("/api/admin/staff", (request, response) => {
   try {
     response.json({ staff: createStaffAccount({ actorId: actor.id, ...parsed.data }) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "创建失败" });
+    sendError(response, 400, "创建失败", error);
   }
 });
 
@@ -523,7 +578,7 @@ app.patch("/api/admin/staff/:id/status", (request, response) => {
   try {
     response.json({ staff: setStaffStatus(actor.id, staffId, parsed.data.status) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "更新失败" });
+    sendError(response, 400, "更新失败", error);
   }
 });
 
@@ -544,7 +599,7 @@ app.patch("/api/admin/staff/:id/retention-popup", (request, response) => {
   try {
     response.json({ staff: updateStaffRetentionPopup(actor.id, staffId, parsed.data) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "保存失败" });
+    sendError(response, 400, "保存失败", error);
   }
 });
 
@@ -560,7 +615,7 @@ app.delete("/api/admin/staff/:id", (request, response) => {
     deleteStaffAccount(actor.id, staffId);
     response.json({ ok: true });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "删除失败" });
+    sendError(response, 400, "删除失败", error);
   }
 });
 
@@ -594,7 +649,7 @@ app.patch("/api/admin/password", (request, response) => {
     changeStaffPassword(staff.id, parsed.data.currentPassword, parsed.data.nextPassword);
     response.json({ ok: true });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "修改失败" });
+    sendError(response, 400, "修改失败", error);
   }
 });
 
@@ -616,7 +671,7 @@ app.post("/api/admin/invite-links", (request, response) => {
   try {
     response.json({ inviteLink: createInviteLink({ actorId: actor.id, ...parsed.data }) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "创建失败" });
+    sendError(response, 400, "创建失败", error);
   }
 });
 
@@ -639,7 +694,7 @@ app.patch("/api/admin/invite-links/:id", (request, response) => {
   try {
     response.json({ inviteLink: updateInviteLink({ actorId: actor.id, linkId, ...parsed.data }) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "修改失败" });
+    sendError(response, 400, "修改失败", error);
   }
 });
 
@@ -656,7 +711,7 @@ app.patch("/api/admin/invite-links/:id/status", (request, response) => {
     setInviteLinkStatus(actor.id, linkId, parsed.data.status);
     response.json({ ok: true });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "更新失败" });
+    sendError(response, 400, "更新失败", error);
   }
 });
 
@@ -672,7 +727,7 @@ app.delete("/api/admin/invite-links/:id", (request, response) => {
     deleteInviteLink(actor.id, linkId);
     response.json({ ok: true });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "删除失败" });
+    sendError(response, 400, "删除失败", error);
   }
 });
 
@@ -697,7 +752,7 @@ app.patch("/api/admin/users/batch/status", (request, response) => {
   try {
     response.json({ count: batchSetUserStatus(parsed.data.userIds, parsed.data.status) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "批量更新失败" });
+    sendError(response, 400, "批量更新失败", error);
   }
 });
 
@@ -713,7 +768,7 @@ app.delete("/api/admin/users/batch", (request, response) => {
   try {
     response.json({ count: batchDeleteUsers(parsed.data.userIds) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "批量删除失败" });
+    sendError(response, 400, "批量删除失败", error);
   }
 });
 
@@ -730,7 +785,7 @@ app.patch("/api/admin/users/:id/status", (request, response) => {
   try {
     response.json({ user: setUserStatus(userId, parsed.data.status) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "更新失败" });
+    sendError(response, 400, "更新失败", error);
   }
 });
 
@@ -761,7 +816,7 @@ app.get("/api/users", (request, response) => {
   try {
     response.json({ users: getUsers(userId) });
   } catch (error) {
-    response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
+    sendError(response, 403, "账号不可用", error);
   }
 });
 
@@ -800,7 +855,7 @@ app.post("/api/users/:id/invite-assignment", (request, response) => {
       retentionNotice: getCustomerRetentionNotice(userId),
     });
   } catch (error) {
-    response.status(403).json({ error: error instanceof Error ? error.message : "未匹配专属客服" });
+    sendError(response, 403, "未匹配专属客服", error);
   }
 });
 
@@ -814,7 +869,7 @@ app.get("/api/conversations", (request, response) => {
   try {
     response.json({ conversations: getConversations(userId) });
   } catch (error) {
-    response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
+    sendError(response, 403, "账号不可用", error);
   }
 });
 
@@ -829,7 +884,7 @@ app.post("/api/conversations/direct", (request, response) => {
     const conversationId = getOrCreateDirectConversation(parsed.data.userId, parsed.data.peerId);
     response.json({ conversationId });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "创建会话失败" });
+    sendError(response, 400, "创建会话失败", error);
   }
 });
 
@@ -842,10 +897,10 @@ app.delete("/api/friends/:peerId", (request, response) => {
   }
   try {
     const conversationId = deleteFriend(userId, peerId);
-    io.emit("conversation:changed", { conversationId });
+    emitConversationChanged(conversationId);
     response.json({ ok: true });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "删除好友失败" });
+    sendError(response, 400, "删除好友失败", error);
   }
 });
 
@@ -865,7 +920,7 @@ app.post("/api/conversations/:id/remark", (request, response) => {
     updateCustomerRemark(parsed.data.userId, peerId, parsed.data.remarkName);
     response.json({ ok: true });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "备注失败" });
+    sendError(response, 400, "备注失败", error);
   }
 });
 
@@ -879,10 +934,10 @@ app.patch("/api/conversations/:id/pin", (request, response) => {
 
   try {
     setConversationPinned(conversationId, parsed.data.userId, parsed.data.pinned);
-    io.emit("conversation:changed", { conversationId });
+    emitConversationChanged(conversationId);
     response.json({ ok: true });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "置顶失败" });
+    sendError(response, 400, "置顶失败", error);
   }
 });
 
@@ -903,7 +958,7 @@ app.get("/api/conversations/:id/messages", (request, response) => {
   try {
     response.json(getMessages(conversationId, userId, { limit, beforeMessageId }));
   } catch (error) {
-    response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
+    sendError(response, 403, "账号不可用", error);
   }
 });
 
@@ -924,7 +979,7 @@ app.get("/api/conversations/:id/messages/:messageId", (request, response) => {
     }
     response.json({ message });
   } catch (error) {
-    response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
+    sendError(response, 403, "账号不可用", error);
   }
 });
 
@@ -940,7 +995,7 @@ app.patch("/api/conversations/:id/read", (request, response) => {
     markConversationRead(conversationId, parsed.data.userId);
     response.json({ ok: true });
   } catch (error) {
-    response.status(403).json({ error: error instanceof Error ? error.message : "账号不可用" });
+    sendError(response, 403, "账号不可用", error);
   }
 });
 
@@ -969,7 +1024,7 @@ app.post("/api/conversations/:id/messages", (request, response) => {
     emitNewMessage(message);
     response.json({ message });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "发送失败" });
+    sendError(response, 400, "发送失败", error);
   }
 });
 
@@ -982,7 +1037,7 @@ app.get("/api/quick-replies", (request, response) => {
   try {
     response.json({ quickReplies: getQuickReplies(userId) });
   } catch (error) {
-    response.status(403).json({ error: error instanceof Error ? error.message : "快捷语不可用" });
+    sendError(response, 403, "快捷语不可用", error);
   }
 });
 
@@ -1001,7 +1056,7 @@ app.post("/api/quick-replies", (request, response) => {
   try {
     response.json({ quickReply: createQuickReply(parsed.data.userId, parsed.data) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "创建快捷语失败" });
+    sendError(response, 400, "创建快捷语失败", error);
   }
 });
 
@@ -1021,7 +1076,7 @@ app.patch("/api/quick-replies/:id", (request, response) => {
   try {
     response.json({ quickReply: updateQuickReply(parsed.data.userId, replyId, parsed.data) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "更新快捷语失败" });
+    sendError(response, 400, "更新快捷语失败", error);
   }
 });
 
@@ -1036,7 +1091,7 @@ app.delete("/api/quick-replies/:id", (request, response) => {
     deleteQuickReply(userId, replyId);
     response.json({ ok: true });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "删除快捷语失败" });
+    sendError(response, 400, "删除快捷语失败", error);
   }
 });
 
@@ -1054,7 +1109,7 @@ app.patch("/api/quick-replies/reorder/list", (request, response) => {
   try {
     response.json({ quickReplies: reorderQuickReplies(parsed.data.userId, parsed.data.replyIds) });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "排序失败" });
+    sendError(response, 400, "排序失败", error);
   }
 });
 
@@ -1139,10 +1194,10 @@ app.post("/api/messages/:id/recall", (request, response) => {
   try {
     const message = recallMessage(messageId, parsed.data.userId);
     io.to(`conversation:${message.conversation_id}`).emit("message:changed", message);
-    io.emit("conversation:changed", { conversationId: message.conversation_id });
+    emitConversationChanged(message.conversation_id);
     response.json({ message });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "撤回失败" });
+    sendError(response, 400, "撤回失败", error);
   }
 });
 
@@ -1206,7 +1261,7 @@ app.post("/api/conversations/:id/forward", (request, response) => {
     }
     response.json({ messages: created });
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "转发失败" });
+    sendError(response, 400, "转发失败", error);
   }
 });
 
@@ -1220,7 +1275,7 @@ io.on("connection", (socket) => {
       return;
     }
     socket.join(`user:${userId}`);
-    io.emit("presence:changed", { userId, online: true });
+    emitPresenceChanged(userId);
   });
 
   socket.on("conversation:join", (conversationId: number) => {
