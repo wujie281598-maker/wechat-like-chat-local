@@ -36,6 +36,8 @@ const API_URL = window.location.origin;
 const INVITE_CODE_STORAGE_KEY = "doudou-im-invite-code";
 const MESSAGE_PAGE_SIZE = 50;
 const MAX_VIDEO_UPLOAD_SIZE = 80 * 1024 * 1024;
+const MAX_IMAGE_UPLOAD_EDGE = 1600;
+const IMAGE_UPLOAD_QUALITY = 0.82;
 const INVITE_COOKIE_NAME = "doudou_im_invite_code";
 
 type BeforeInstallPromptEvent = Event & {
@@ -431,6 +433,38 @@ function userUploadErrorMessage(error: unknown, fallback = "上传失败，请�
 function isVideoFile(file: File | { name?: string; type?: string }) {
   const extension = file.name?.split(".").pop()?.toLowerCase() ?? "";
   return Boolean(file.type?.startsWith("video/")) || ["mp4", "mov", "m4v", "webm", "avi", "mkv"].includes(extension);
+}
+
+function isImageFile(file: File | { name?: string; type?: string }) {
+  return Boolean(file.type?.startsWith("image/"));
+}
+
+async function compressImageForUpload(file: File) {
+  if (!isImageFile(file) || file.type === "image/gif" || file.type === "image/svg+xml") return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_IMAGE_UPLOAD_EDGE / Math.max(bitmap.width, bitmap.height));
+    if (scale >= 1 && file.size <= 1.2 * 1024 * 1024) {
+      bitmap.close();
+      return file;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) {
+      bitmap.close();
+      return file;
+    }
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", IMAGE_UPLOAD_QUALITY));
+    if (!blob || blob.size >= file.size) return file;
+    const fileName = file.name.replace(/\.[^.]+$/, "") || `image-${Date.now()}`;
+    return new File([blob], `${fileName}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+  } catch {
+    return file;
+  }
 }
 
 function captureVideoPoster(file: File | Blob): Promise<string | null> {
@@ -2404,15 +2438,16 @@ function App() {
     setNotice(hasVideo ? "正在上传并处理视频..." : `正在上传 ${selectedFiles.length} 个文件...`);
     try {
       for (const file of selectedFiles) {
+        const uploadFile = isImageFile(file) ? await compressImageForUpload(file) : file;
         const formData = new FormData();
         formData.append("userId", String(currentUser.id));
-        if (isVideoFile(file)) {
+        if (isVideoFile(uploadFile)) {
           setNotice("正在生成视频封面...");
-          const poster = await captureVideoPoster(file);
+          const poster = await captureVideoPoster(uploadFile);
           if (poster) formData.append("poster", poster);
           setNotice("正在上传并处理视频...");
         }
-        formData.append("file", file);
+        formData.append("file", uploadFile);
         const response = await fetch(`${API_URL}/api/conversations/${conversationId}/uploads`, {
           method: "POST",
           body: formData,
@@ -2431,7 +2466,6 @@ function App() {
       }
       if (uploaded) {
         setNotice("已发送");
-        void refreshConversationList();
         scrollToBottom("smooth");
       }
       if (uploaded && source === "capture") closeCamera();
@@ -2490,7 +2524,6 @@ function App() {
       }
       if (!response.ok) throw new Error(normalizeUserError(data.error, "上传失败"));
       if (data.message) upsertMessage(data.message);
-      void refreshConversationList();
       closeCamera();
     } catch (error) {
       setNotice(userUploadErrorMessage(error));
@@ -4191,14 +4224,6 @@ function VideoBubble({ media, onMediaLoad }: { media: MediaBody; onMediaLoad?: (
 
   useEffect(() => {
     setPoster(serverPoster);
-    if (serverPoster) return;
-    let cancelled = false;
-    void captureVideoPosterFromUrl(`${API_URL}${media.url}`).then((nextPoster) => {
-      if (!cancelled && nextPoster) setPoster(nextPoster);
-    });
-    return () => {
-      cancelled = true;
-    };
   }, [media.url, serverPoster]);
 
   function updatePosterSize(event: React.SyntheticEvent<HTMLImageElement>) {
