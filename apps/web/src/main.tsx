@@ -1430,6 +1430,7 @@ function App() {
   const [contactsSelectionMode, setContactsSelectionMode] = useState(false);
   const [contactsConfirmDelete, setContactsConfirmDelete] = useState(false);
   const [contactsCleanupScope, setContactsCleanupScope] = useState<"3d" | "7d" | null>(null);
+  const [copyFallbackText, setCopyFallbackText] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const mediaViewerVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -2987,22 +2988,32 @@ function App() {
     });
   }
 
+  function copyTextBySelection(text: string) {
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.style.position = "fixed";
+    input.style.left = "0";
+    input.style.top = "0";
+    input.style.width = "1px";
+    input.style.height = "1px";
+    input.style.opacity = "0";
+    input.setAttribute("readonly", "readonly");
+    document.body.appendChild(input);
+    input.focus();
+    input.select();
+    input.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    input.remove();
+    return ok;
+  }
+
   async function writeClipboardText(text: string) {
+    if (copyTextBySelection(text)) return;
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
       return;
     }
-    const input = document.createElement("textarea");
-    input.value = text;
-    input.style.position = "fixed";
-    input.style.left = "-9999px";
-    input.style.top = "0";
-    document.body.appendChild(input);
-    input.focus();
-    input.select();
-    const ok = document.execCommand("copy");
-    input.remove();
-    if (!ok) throw new Error("复制失败");
+    throw new Error("复制失败");
   }
 
   async function copyMessageFromMenu() {
@@ -3019,7 +3030,8 @@ function App() {
       await writeClipboardText(text);
       setNotice("已复制");
     } catch (error) {
-      setNotice(normalizeUserError(error, "复制失败"));
+      setCopyFallbackText(text);
+      setNotice("复制失败，请长按文字手动复制");
     } finally {
       setActionMenu(null);
     }
@@ -3989,6 +4001,20 @@ function App() {
               {selectedMessageIds.includes(actionMenu.messageId) ? "取消选择" : "多选"}
             </button>
           </div>
+        </div>
+      ) : null}
+      {copyFallbackText ? (
+        <div className="modal-mask">
+          <section className="copy-fallback-modal">
+            <strong>手动复制</strong>
+            <p>当前浏览器限制了自动复制，请长按下面内容复制。</p>
+            <textarea value={copyFallbackText} readOnly autoFocus onFocus={(event) => event.currentTarget.select()} />
+            <footer>
+              <button type="button" onClick={() => setCopyFallbackText("")}>
+                关闭
+              </button>
+            </footer>
+          </section>
         </div>
       ) : null}
       {conversationMenu ? (

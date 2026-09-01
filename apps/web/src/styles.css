@@ -1115,6 +1115,61 @@ button {
   background: #fa5151;
 }
 
+.copy-fallback-modal {
+  width: min(420px, calc(100vw - 32px));
+  padding: 22px;
+  border-radius: 8px;
+  background: white;
+  box-shadow: 0 16px 46px rgba(0, 0, 0, 0.18);
+}
+
+.copy-fallback-modal strong {
+  display: block;
+  color: #111;
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.copy-fallback-modal p {
+  margin: 12px 0;
+  color: #5c6670;
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.copy-fallback-modal textarea {
+  width: 100%;
+  min-height: 118px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  color: #1f2328;
+  font: inherit;
+  line-height: 1.6;
+  background: #f7f8fa;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.copy-fallback-modal footer {
+  margin-top: 14px;
+  display: flex;
+}
+
+.copy-fallback-modal footer button {
+  flex: 1;
+  height: 40px;
+  border: 0;
+  border-radius: 6px;
+  color: white;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--green);
+}
+
 .conversation-row.pinned {
   background: #e8edf1;
 }
