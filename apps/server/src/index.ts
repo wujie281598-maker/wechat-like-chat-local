@@ -21,6 +21,7 @@ import {
   createStaffAccount,
   createQuickReply,
   deleteFriend,
+  deleteFriends,
   deleteInviteLink,
   deleteQuickReply,
   deleteStaffAccount,
@@ -901,6 +902,23 @@ app.delete("/api/friends/:peerId", (request, response) => {
     response.json({ ok: true });
   } catch (error) {
     sendError(response, 400, "删除好友失败", error);
+  }
+});
+
+app.delete("/api/friends", (request, response) => {
+  const parsed = z.object({ userId: z.number(), peerIds: z.array(z.number()).min(1) }).safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: "参数不正确" });
+    return;
+  }
+  try {
+    const conversationIds = deleteFriends(parsed.data.userId, parsed.data.peerIds);
+    for (const conversationId of conversationIds) {
+      emitConversationChanged(conversationId);
+    }
+    response.json({ ok: true, count: conversationIds.length });
+  } catch (error) {
+    sendError(response, 400, "批量删除好友失败", error);
   }
 });
 

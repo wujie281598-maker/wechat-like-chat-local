@@ -36,19 +36,34 @@ const API_URL = window.location.origin;
 const INVITE_CODE_STORAGE_KEY = "doudou-im-invite-code";
 const MESSAGE_PAGE_SIZE = 50;
 const MAX_VIDEO_UPLOAD_SIZE = 80 * 1024 * 1024;
+const INVITE_COOKIE_NAME = "doudou_im_invite_code";
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 
+function getCookieValue(name: string) {
+  const escapedName = `${name}=`;
+  const entry = document.cookie.split("; ").find((item) => item.startsWith(escapedName));
+  if (!entry) return "";
+  const value = entry.slice(escapedName.length);
+  return value ? decodeURIComponent(value) : "";
+}
+
+function setCookieValue(name: string, value: string) {
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=2592000; samesite=lax`;
+}
+
 function currentInviteCode() {
   const fromUrl = new URLSearchParams(window.location.search).get("invite")?.trim() ?? "";
   if (fromUrl) {
     localStorage.setItem(INVITE_CODE_STORAGE_KEY, fromUrl);
+    setCookieValue(INVITE_COOKIE_NAME, fromUrl);
     return fromUrl;
   }
-  const stored = localStorage.getItem(INVITE_CODE_STORAGE_KEY) ?? "";
+  const cookieInvite = getCookieValue(INVITE_COOKIE_NAME);
+  const stored = localStorage.getItem(INVITE_CODE_STORAGE_KEY) ?? cookieInvite ?? "";
   if (stored && !window.location.pathname.startsWith("/admin")) {
     const url = new URL(window.location.href);
     url.searchParams.set("invite", stored);
@@ -316,7 +331,18 @@ async function adminApi<T>(path: string, token: string, options?: RequestInit): 
   return (data ?? {}) as T;
 }
 
-function formatTime(value: string | null) {
+function formatDateTime(value: string | null) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(`${value}Z`));
+}
+
+function formatClockTime(value: string | null) {
   if (!value) return "";
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(`${value}Z`));
 }
@@ -1272,7 +1298,7 @@ function AdminApp() {
                 <strong>{user.nickname}</strong>
                 <span>{user.phone}</span>
                 <span className={user.status === "active" ? "status-active" : "status-disabled"}>{user.status === "active" ? "启用" : "禁用"}</span>
-                <span>{formatTime(user.last_seen_at)}</span>
+                <span>{formatDateTime(user.last_seen_at)}</span>
                 <div className="row-actions">
                   <button onClick={() => void toggleUserStatus(user)} disabled={user.sequence_number === 1}>{user.sequence_number === 1 ? "保留" : user.status === "active" ? "禁用" : "启用"}</button>
                 </div>
@@ -1366,6 +1392,10 @@ function App() {
   const [quickForm, setQuickForm] = useState({ id: 0, content: "" });
   const [draggingQuickId, setDraggingQuickId] = useState<number | null>(null);
   const [editingRemark, setEditingRemark] = useState<{ conversationId: number; value: string } | null>(null);
+  const [selectedContactIds, setSelectedContactIds] = useState<number[]>([]);
+  const [contactsSelectionMode, setContactsSelectionMode] = useState(false);
+  const [contactsConfirmDelete, setContactsConfirmDelete] = useState(false);
+  const [contactsCleanupScope, setContactsCleanupScope] = useState<"3d" | "7d" | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const mediaViewerVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -1373,6 +1403,7 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const captureInputRef = useRef<HTMLInputElement | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
+  const contactLongPressTimerRef = useRef<number | null>(null);
   const conversationPressTimerRef = useRef<number | null>(null);
   const conversationTouchStartRef = useRef<{ id: number; x: number; y: number } | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -2201,6 +2232,93 @@ function App() {
     }
   }
 
+  function contactCandidates() {
+    const contactList = conversations
+      .filter((conversation) => conversation.peer_id && conversation.peer_id !== currentUser?.id)
+      .map((conversation) => ({
+        conversation,
+        lastSeenAt: conversation.peer_last_seen_at,
+        daysSinceLastSeen: conversation.peer_last_seen_at
+          ? Math.floor((Date.now() - new Date(`${conversation.peer_last_seen_at}Z`).getTime()) / (1000 * 60 * 60 * 24))
+          : Number.POSITIVE_INFINITY,
+      }));
+    return contactList.filter(({ conversation }) => {
+      if (query.trim()) {
+        const keyword = query.trim().toLowerCase();
+        return `${conversation.peer_nickname ?? ""}${conversation.peer_phone ?? ""}`.toLowerCase().includes(keyword);
+      }
+      return true;
+    });
+  }
+
+  function toggleContactSelection(userId: number) {
+    setSelectedContactIds((current) => (current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]));
+  }
+
+  function beginContactSelection(userId: number) {
+    setContactsSelectionMode(true);
+    setSelectedContactIds((current) => (current.includes(userId) ? current : [...current, userId]));
+  }
+
+  function clearContactSelection() {
+    setContactsSelectionMode(false);
+    setSelectedContactIds([]);
+    setContactsConfirmDelete(false);
+    setContactsCleanupScope(null);
+  }
+
+  async function deleteContacts(userIds: number[]) {
+    if (!currentUser || userIds.length === 0) return;
+    const uniqueIds = Array.from(new Set(userIds));
+    try {
+      const conversationIds = conversations
+        .filter((conversation) => uniqueIds.includes(conversation.peer_id ?? -1))
+        .map((conversation) => conversation.id);
+      await api<{ ok: true; count: number }>("/api/friends", {
+        method: "DELETE",
+        body: JSON.stringify({ userId: currentUser.id, peerIds: uniqueIds }),
+      });
+      if (activeConversation && uniqueIds.includes(activeConversation.peer_id ?? -1)) {
+        setActiveConversationId(null);
+        setMessages([]);
+      }
+      if (conversationIds.includes(activeConversationId ?? -1)) {
+        setActiveConversationId(null);
+        setMessages([]);
+      }
+      setConversationMenu(null);
+      setSwipedConversationId(null);
+      await loadUsers(currentUser.id);
+      await loadConversationList();
+      clearContactSelection();
+      setNotice("已删除联系人");
+    } catch (error) {
+      setNotice(normalizeUserError(error, "删除失败"));
+    }
+  }
+
+  async function deleteContactsByScope(scope: "3d" | "7d") {
+    const items = contactCandidates().filter(({ daysSinceLastSeen }) => daysSinceLastSeen >= (scope === "3d" ? 3 : 7));
+    if (items.length === 0) {
+      setNotice(scope === "3d" ? "没有三天未联系的联系人" : "没有七天未联系的联系人");
+      return;
+    }
+    await deleteContacts(items.map(({ conversation }) => conversation.peer_id!).filter((id): id is number => Boolean(id)));
+  }
+
+  async function confirmContactDelete() {
+    try {
+      if (contactsCleanupScope) {
+        await deleteContactsByScope(contactsCleanupScope);
+        return;
+      }
+      await deleteContacts(selectedContactIds);
+    } finally {
+      setContactsConfirmDelete(false);
+      setContactsCleanupScope(null);
+    }
+  }
+
   async function remarkConversation(conversation: Conversation, remarkName: string) {
     if (!currentUser || !currentUser.phone.startsWith("staff:") || !conversation.peer_id || conversation.peer_id === currentUser.id) return;
     try {
@@ -2257,6 +2375,18 @@ function App() {
     if (Math.abs(deltaX) > 54 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4) {
       setSwipedConversationId(deltaX < 0 ? conversationId : null);
     }
+  }
+
+  function startContactPress(userId: number, event: React.PointerEvent) {
+    if (event.pointerType === "mouse") return;
+    contactLongPressTimerRef.current = window.setTimeout(() => {
+      beginContactSelection(userId);
+    }, 520);
+  }
+
+  function cancelContactPress() {
+    if (contactLongPressTimerRef.current) window.clearTimeout(contactLongPressTimerRef.current);
+    contactLongPressTimerRef.current = null;
   }
 
   async function uploadFiles(files: FileList | null, source: "picker" | "capture" = "picker") {
@@ -2964,6 +3094,15 @@ function App() {
   const keyword = query.trim().toLowerCase();
   const contactUsers = [currentUser, ...users];
   const filteredUsers = contactUsers.filter((user) => `${user.nickname}${user.phone}`.toLowerCase().includes(keyword));
+  const contactItems = conversations
+    .filter((conversation) => conversation.peer_id && conversation.peer_id !== currentUser.id)
+    .map((conversation) => ({
+      conversation,
+      daysSinceLastSeen: conversation.peer_last_seen_at
+        ? Math.floor((Date.now() - new Date(`${conversation.peer_last_seen_at}Z`).getTime()) / (1000 * 60 * 60 * 24))
+        : Number.POSITIVE_INFINITY,
+    }));
+  const contactSelections = contactItems.filter(({ conversation }) => selectedContactIds.includes(conversation.peer_id ?? -1));
   const filteredConversations = conversations.filter((conversation) => {
     if (!keyword) return true;
     const preview = formatConversationPreview(conversation);
@@ -2972,6 +3111,7 @@ function App() {
   const totalUnread = conversations.reduce((sum, conversation) => sum + conversation.unread_count, 0);
   const isStaffUser = currentUser.phone.startsWith("staff:");
   const isSelectingMessages = selectedMessageIds.length > 0;
+  const isSelectingContacts = selectedContactIds.length > 0 || contactsSelectionMode;
   const canRemarkActiveConversation =
     isStaffUser && Boolean(activeConversation?.peer_id) && activeConversation?.peer_id !== currentUser.id;
   const canUseInstallPrompt = Boolean(installPromptEvent) && !isStaffUser;
@@ -3014,6 +3154,47 @@ function App() {
           </button>
         </nav>
 
+        {mode === "contacts" ? (
+          <div className="contacts-toolbar">
+            <button
+              type="button"
+              onClick={() => {
+                setContactsCleanupScope("3d");
+                setContactsConfirmDelete(true);
+              }}
+            >
+              删 3 天未联系
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setContactsCleanupScope("7d");
+                setContactsConfirmDelete(true);
+              }}
+            >
+              删 7 天未联系
+            </button>
+            {isSelectingContacts ? (
+              <>
+                <button
+                  type="button"
+                  className="selection-primary"
+                  onClick={() => {
+                    if (selectedContactIds.length === 0) return;
+                    setContactsCleanupScope(null);
+                    setContactsConfirmDelete(true);
+                  }}
+                >
+                  删除已选
+                </button>
+                <button type="button" className="selection-cancel" onClick={clearContactSelection}>
+                  取消选择
+                </button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
         <section className="list">
           {mode === "chats" ? (
             filteredConversations.length ? (
@@ -3043,7 +3224,7 @@ function App() {
                     <div className="row-main">
                       <div className="row-title">
                         <strong>{conversation.peer_nickname ?? "会话"}</strong>
-                        <span>{formatTime(conversation.last_message_at)}</span>
+                        <span>{formatDateTime(conversation.last_message_at)}</span>
                       </div>
                       <p>{formatConversationPreview(conversation)}</p>
                     </div>
@@ -3062,24 +3243,62 @@ function App() {
             filteredUsers.map((user) => {
               const isSelf = user.id === currentUser.id;
               return (
-              <button key={user.id} className="list-row" onClick={() => void openDirect(user.id)}>
-                <div className={`avatar small ${avatarRoleClass(user.phone)}`} style={avatarStyle(user.avatar_url)}>{avatarLabel(user.nickname)}</div>
-                <div className="row-main">
-                  <div className="row-title">
-                    <strong>{isSelf ? `${user.nickname}（自己）` : user.nickname}</strong>
-                    <span className={isOnline(user.last_seen_at) ? "online" : ""}>
-                      {isSelf ? "自己" : isOnline(user.last_seen_at) ? "在线" : "离线"}
-                    </span>
-                  </div>
-                  <p>{user.phone}</p>
-                </div>
-              </button>
+                <button
+                  key={user.id}
+                  className={`list-row contact-row ${selectedContactIds.includes(user.id) ? "selected" : ""}`}
+                  onClick={() => {
+                    if (contactsSelectionMode) {
+                      toggleContactSelection(user.id);
+                      return;
+                    }
+                    void openDirect(user.id);
+                  }}
+                  onPointerDown={(event) => startContactPress(user.id, event)}
+                  onPointerUp={cancelContactPress}
+                  onPointerCancel={cancelContactPress}
+                  onPointerLeave={cancelContactPress}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    beginContactSelection(user.id);
+                  }}
+                >
+                  <div className={`avatar small ${avatarRoleClass(user.phone)}`} style={avatarStyle(user.avatar_url)}>{avatarLabel(user.nickname)}</div>
+                    <div className="row-main">
+                      <div className="row-title">
+                        <strong>{isSelf ? `${user.nickname}（自己）` : user.nickname}</strong>
+                        <span className={isOnline(user.last_seen_at) ? "online" : ""}>
+                          {isSelf ? "自己" : isOnline(user.last_seen_at) ? "在线" : "离线"}
+                      </span>
+                    </div>
+                    <p>{user.phone}</p>
+                    </div>
+                    {contactsSelectionMode ? (
+                      <span className={`contact-check ${selectedContactIds.includes(user.id) ? "selected" : ""}`}>{selectedContactIds.includes(user.id) ? <Check size={13} /> : null}</span>
+                    ) : null}
+                  </button>
               );
             })
           ) : (
             <EmptyState icon={<UserPlus />} title={keyword ? "没有找到联系人" : "暂无联系人"} text={keyword ? "换个昵称或手机号试试。" : "用另一个手机号登录即可生成测试联系人。"} />
           )}
         </section>
+        {mode === "contacts" && isSelectingContacts ? (
+          <div className="selection-toolbar contacts-selection-toolbar">
+            <button
+              type="button"
+              onClick={() => {
+                setContactsCleanupScope(null);
+                setContactsConfirmDelete(true);
+              }}
+            >
+              删除
+            </button>
+            <span>已选 {selectedContactIds.length} 位联系人</span>
+            <button type="button" className="selection-cancel" onClick={clearContactSelection}>
+              取消
+            </button>
+          </div>
+        ) : null}
       </aside>
 
       <section
@@ -3246,7 +3465,7 @@ function App() {
                       </button>
                     ) : null}
                     <div className="bubble-wrap">
-                      <span>{formatTime(message.created_at)}</span>
+                      <span>{formatDateTime(message.created_at)}</span>
                       <button
                         className="bubble-button"
                         onClick={(event) => {
@@ -3529,6 +3748,28 @@ function App() {
           </section>
         </div>
       ) : null}
+      {contactsConfirmDelete ? (
+        <div className="modal-mask">
+          <section className="confirm-modal">
+            <strong>确定删除吗</strong>
+            <p>
+              {contactsCleanupScope
+                ? contactsCleanupScope === "3d"
+                  ? "将删除所有 3 天未联系的联系人。"
+                  : "将删除所有 7 天未联系的联系人。"
+                : `将删除已选的 ${selectedContactIds.length} 位联系人。`}
+            </p>
+            <footer>
+              <button type="button" onClick={() => setContactsConfirmDelete(false)}>
+                取消
+              </button>
+              <button type="button" className="danger-action" onClick={() => void confirmContactDelete()}>
+                确定删除
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
       {viewingBundle ? (
         <div className="modal-mask">
           <section className="record-modal">
@@ -3546,7 +3787,7 @@ function App() {
                 <article key={`${item.createdAt}-${index}`} className="record-item">
                   <div className="record-meta">
                     <strong>{item.sender}</strong>
-                    <span>{formatTime(item.createdAt)}</span>
+                    <span>{formatDateTime(item.createdAt)}</span>
                   </div>
                   <RecordContent
                     item={item}

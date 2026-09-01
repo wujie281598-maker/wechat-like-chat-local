@@ -1113,26 +1113,40 @@ export function setConversationPinned(conversationId: number, userId: number, pi
 }
 
 export function deleteFriend(userId: number, peerId: number) {
+  const conversationIds = deleteFriends(userId, [peerId]);
+  return conversationIds[0] ?? null;
+}
+
+export function deleteFriends(userId: number, peerIds: number[]) {
   assertActiveUser(userId);
-  if (userId === peerId) throw new Error("不能删除自己");
-  const conversation = db
-    .prepare(`
-      SELECT cm1.conversation_id AS id
-      FROM conversation_members cm1
-      JOIN conversation_members cm2 ON cm2.conversation_id = cm1.conversation_id
-      JOIN conversations c ON c.id = cm1.conversation_id
-      WHERE c.type = 'direct'
-        AND cm1.user_id = ?
-        AND cm2.user_id = ?
-      LIMIT 1
-    `)
-    .get(userId, peerId) as { id: number } | undefined;
-  if (!conversation) throw new Error("好友不存在");
-  db.prepare("UPDATE conversation_members SET deleted_at = CURRENT_TIMESTAMP, unread_count = 0, is_pinned = 0 WHERE conversation_id = ? AND user_id = ?").run(
-    conversation.id,
-    userId,
-  );
-  return conversation.id;
+  const uniquePeerIds = Array.from(new Set(peerIds.filter((peerId) => Number.isInteger(peerId) && peerId > 0)));
+  if (uniquePeerIds.length === 0) throw new Error("请选择联系人");
+
+  return db.transaction(() => {
+    const conversationIds: number[] = [];
+    for (const peerId of uniquePeerIds) {
+      if (userId === peerId) throw new Error("不能删除自己");
+      const conversation = db
+        .prepare(`
+          SELECT cm1.conversation_id AS id
+          FROM conversation_members cm1
+          JOIN conversation_members cm2 ON cm2.conversation_id = cm1.conversation_id
+          JOIN conversations c ON c.id = cm1.conversation_id
+          WHERE c.type = 'direct'
+            AND cm1.user_id = ?
+            AND cm2.user_id = ?
+          LIMIT 1
+        `)
+        .get(userId, peerId) as { id: number } | undefined;
+      if (!conversation) throw new Error("好友不存在");
+      db.prepare("UPDATE conversation_members SET deleted_at = CURRENT_TIMESTAMP, unread_count = 0, is_pinned = 0 WHERE conversation_id = ? AND user_id = ?").run(
+        conversation.id,
+        userId,
+      );
+      conversationIds.push(conversation.id);
+    }
+    return conversationIds;
+  })();
 }
 
 export function getDirectConversationPeerId(conversationId: number, userId: number) {

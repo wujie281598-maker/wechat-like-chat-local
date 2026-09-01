@@ -1021,6 +1021,100 @@ button {
   background: #dfe6eb;
 }
 
+.contact-row {
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+}
+
+.contact-check {
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(7, 193, 96, 0.28);
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: white;
+  background: white;
+}
+
+.contact-check.selected {
+  border-color: var(--green);
+  background: var(--green);
+}
+
+.contacts-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #f7f8fa;
+}
+
+.contacts-toolbar button {
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 10px;
+  color: #46515a;
+  background: white;
+}
+
+.contacts-selection-toolbar {
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  background: #f7f8fa;
+}
+
+.confirm-modal {
+  width: min(360px, calc(100vw - 48px));
+  padding: 24px 22px 18px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 16px 46px rgba(0, 0, 0, 0.18);
+}
+
+.confirm-modal strong {
+  display: block;
+  color: #111;
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.confirm-modal p {
+  margin: 14px 0 22px;
+  color: #2f3338;
+  font-size: 15px;
+  line-height: 1.65;
+  word-break: break-word;
+  text-align: center;
+}
+
+.confirm-modal footer {
+  display: flex;
+  gap: 10px;
+}
+
+.confirm-modal footer button {
+  flex: 1;
+  height: 42px;
+  border: 0;
+  border-radius: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.confirm-modal footer button:first-child {
+  color: #46515a;
+  background: #eef1f4;
+}
+
+.confirm-modal footer .danger-action {
+  color: white;
+  background: #fa5151;
+}
+
 .conversation-row.pinned {
   background: #e8edf1;
 }
